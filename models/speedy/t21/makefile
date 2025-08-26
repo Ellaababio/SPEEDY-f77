@@ -6,12 +6,13 @@ COMOTT1= -O3 -fdefault-real-8 -fconvert=big-endian -frecord-marker=4
 #COMOTT1=   -fdefault-real-8 -fconvert=big-endian -frecord-marker=4
 
 
-
-COMLIB1= #netcdf flags
-NETCDFEN= read_write_netcdf.f `nf-config --fflags --flibs`
+# New, corrected lines
+NETCDF_FLAGS= -L/gpfs/home/jjs21b/netcdf-4.2-install/lib -lnetcdff
+NETCDF_INCLUDE= -I/gpfs/home/jjs21b/netcdf-4.2-install/include
 
 
 FILES= \
+       read_write_netcdf.o \
        cpl_bcinterp.o \
        cpl_land.o \
        cpl_land_model.o \
@@ -63,10 +64,11 @@ FILES= \
 .SUFFIXES: .f .o
 
 .f.o:
-	$(COMPILE)  $(COMOTT1) $(COMLIB1) $(NETCDFEN) -c $<
+	$(COMPILE)  $(COMOTT1) $(NETCDF_INCLUDE) -c $<
 
+# Final linking step. It now uses the correct library flags.
 imp.exe: $(FILES)  at_gcm.o
-	$(COMPILE) $(COMOTT1) $(FILES) $(NETCDFEN) at_gcm.o -o imp.exe $(COMLIB1) 
+	$(COMPILE) $(COMOTT1) $(FILES) at_gcm.o -o imp.exe $(NETCDF_FLAGS)
 
 
 at_gcm.o               : at_gcm.f
