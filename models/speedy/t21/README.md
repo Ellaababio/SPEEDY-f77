@@ -77,7 +77,6 @@ tar -xvf v4.3.2.tar.gz
 cd netcdf-c-4.3.2
 export CPPFLAGS="-I$HOME/speedy_libs/include"
 export LDFLAGS="-L$HOME/speedy_libs/lib"
-export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
 ./configure --prefix=$HOME/speedy_libs --disable-dap
 make
 # make check
@@ -91,7 +90,8 @@ wget https://github.com/Unidata/netcdf-fortran/archive/refs/tags/netcdf-fortran-
 tar -xvf netcdf-fortran-4.2.tar.gz
 cd netcdf-fortran-netcdf-fortran-4.2
 autoreconf -i # Makes the configure script executable
-# The environment variables should still be set from the last step.
+export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
+# The other environment variables should still be set from the last step.
 ./configure --prefix=$HOME/speedy_libs
 
 ### IMPORTANT
