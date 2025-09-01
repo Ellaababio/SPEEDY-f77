@@ -116,7 +116,7 @@ All required libraries are now built and installed in `~/speedy_libs`.
 
 ## 5. Building the SPEEDY Model
 
-#### Step 5.1: Clone the Model Repository and Navigate
+#### Step 5.1: Clone the Model Repository and Navigate to the Model Directory
 
 First, clone the repository containing the SPEEDY model source code and navigate to the correct directory where the `makefile` is located.
 
