@@ -15,7 +15,6 @@ This guide assumes the legacy Fortran model (imp.exe) has already been compiled 
 - Access to the HPC and Slurm scheduler.
 - Anaconda/Conda available as an HPC module.
 - The AMLCS repository checked out (scripts located under AMLCS/amlcs/).
-- Replace `/gpfs/home/your_username/` with your actual home directory path in all examples below.
 
 ---
 
@@ -45,120 +44,41 @@ conda activate speedy_da_env
 
 ### 2. Run the experiment — 3 Slurm jobs in sequence
 
-The experiment is executed as three separate Slurm jobs. Create one script for each stage and submit them sequentially (wait for each to finish before submitting the next).
+The experiment is executed as three separate Slurm jobs. Wait for each to finish before submitting the next. Ensure that you are in your repository's root directory when submitting these jobs
 
 #### 2.1 Pre-Processing (generate initial ensemble and reference)
-
-Save as `launch_preprocess.sh`:
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=DA_PREP
-#SBATCH --output=DA_PREP_%j.out
-#SBATCH --error=DA_PREP_%j.err
-#SBATCH --account=chipilskigroup_q
-#SBATCH --partition=chipilskigroup_q
-#SBATCH -t 01:00:00
-#SBATCH -n 1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=12g
-
-echo "--- Pre-processing Job Started ---"
-
-module purge
-module load gnu/4.8.5
-module load anaconda/3.11.5
-eval "$(conda shell.bash hook)"
-conda activate speedy_da_env
-export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
-
-cd amlcs/
-
-srun python amlcs_pre.py amlcs_pre_t21.csv
-
-echo "--- Pre-processing Job Finished ---"
-```
 
 Submit:
 
 ```bash
 sbatch launch_preprocess.sh
 ```
+Before moving onto the next step, verify that there are no fatal errors in the DA_PREP_%j.err file and that the final lines of the generate DA_PREP_%j.out file state the following:
+
+```txt
+* ENDJ - Finishing creating the free_run trajectory for M = 30
+* ENDJ - All ensemble members have been collected
+--- Pre-processing Job Finished ---
+```
+
 
 #### 2.2 Main Data Assimilation
 
-Save as `launch_main_da.sh`:
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=DA_MAIN
-#SBATCH --output=DA_MAIN_%j.out
-#SBATCH --error=DA_MAIN_%j.err
-#SBATCH --account=chipilskigroup_q
-#SBATCH --partition=chipilskigroup_q
-#SBATCH -t 04:00:00
-#SBATCH -n 1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=12G
-
-echo "--- Main DA Job Started ---"
-
-module purge
-module load gnu/4.8.5
-module load anaconda/3.11.5
-eval "$(conda shell.bash hook)"
-conda activate speedy_da_env
-export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
-
-cd /gpfs/home/<your_username>/AMLCS/amlcs/
-
-srun python amlcs_da.py amlcs_da_t21_LEnKF_s2r1.csv
-
-echo "--- Main DA Job Finished ---"
-```
 
 Submit:
 
 ```bash
 sbatch launch_main_da.sh
 ```
+Before moving onto the next step, verify that there are no fatal errors in the DA_MAIN_11272653_%j.err and that the final lines of the DA_MAIN_11272653_%j.out file state the following:
 
+```txt
+* ENDJ - Performing forecast ensemble member 79
+--- Main DA Job Finished ---
+```
+You should be able to view your results as csv files within the `/gpfs/home/jjs21b/AMLCS/runs/t21_80_0.05_30_LEnKF_1_5_108/results` directory
 #### 2.3 Post-Processing and Plotting
 
-Create a plotting config file `plot_config.csv` in the AMLCS root:
-
-```
-exp_path,resolution,variable,level
-t21_80_0.05_30_LEnKF_1_5_108,t21,,
-```
-
-Save Slurm script as `launch_plotting.sh`:
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=DA_PLOT
-#SBATCH --output=DA_PLOT_%j.out
-#SBATCH --error=DA_PLOT_%j.err
-#SBATCH --account=chipilskigroup_q
-#SBATCH --partition=chipilskigroup_q
-#SBATCH -t 00:30:00
-#SBATCH -n 1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=4G
-
-echo "--- Plotting Job Started ---"
-
-module purge
-module load anaconda/3.11.5
-eval "$(conda shell.bash hook)"
-conda activate speedy_da_env
-
-cd /gpfs/home/your_username/AMLCS/
-
-srun python to_run/error_plots.py plot_config.csv
-
-echo "--- Plotting Job Finished ---"
-```
 
 Submit:
 
@@ -166,13 +86,12 @@ Submit:
 sbatch launch_plotting.sh
 ```
 
----
+Once this job concludes, you should be able to view the error plots within the `runs/t21_80_0.05_30_LEnKF_1_5_108/plots` directory.
 
 ### Notes and tips
 
 - Ensure `LD_LIBRARY_PATH` points to any required custom libraries (e.g., compiled speed y libs).  
 - Verify job output and error files (DA_PREP_*.out, DA_MAIN_*.out, DA_PLOT_*.out) for progress and errors.  
 - Adjust time, memory, and partition options in Slurm headers according to cluster policies and job needs.  
-- Replace `/gpfs/home/your_username/` with your actual home directory in all scripts.
 
 This completes the steps required to run the T21 data-assimilation experiment using AMLCS on an HPC system.
