@@ -95,7 +95,8 @@ def main_general_plotter(df_params):
         levels = row["level"]
         grid_res = row["resolution"]
         M = int(row["M"])
-
+        # ADDED: Read the new directory name parameter from the CSV
+        plot_dir_name = row["plot_dir_name"]
         if pd.isna(variables):
             variables = model_vars
         else:
@@ -107,7 +108,16 @@ def main_general_plotter(df_params):
             levels = levels.strip().split(",")
             levels = [int(v) for v in levels]
 
+        # ADDED: Provide a default name if the parameter is not in the CSV
+        # First, define the base path to the "errors" directory
         plots_path = method_path / "plots" / "errors"
+
+        # If a specific subdirectory name is given in the CSV, append it
+        if not pd.isna(plot_dir_name):
+            plots_path = plots_path / plot_dir_name
+
+        # UPDATED: Construct the plots_path using the new directory name
+        
 
         gs = grid_resolution(grid_res)
         ppt = postpro_tools(grid_res, gs, method_path, M)
