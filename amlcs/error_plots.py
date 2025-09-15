@@ -36,15 +36,38 @@ pslvl = [30, 100, 200, 300, 500, 700, 850, 925]
 
 def single_error_plotter(analysis, background, var, lvl, ppt, plots_path):
     lvl_str = str(lvl)
+    
+    # --- START OF DEBUGGING SECTION ---
+    print(f"\n--- Debugging: Plotting {var} at level {lvl} ---")
+    
+    # 1. Check the raw data from the CSV files for this level
+    print("Raw Analysis Error data:")
+    print(analysis[lvl_str])
+    print("\nRaw Background Error data:")
+    print(background[lvl_str])
+    
+    # Add a small number (epsilon) to avoid log(0) errors
+    epsilon = 1e-12
+    
     zero = pd.Series(background[lvl_str].values[0])
-    data_analysis_by_level = np.log(pd.concat([zero, analysis[lvl_str]], ignore_index=True))
-    data_backgroudn_by_level = np.log(pd.concat([zero, background[lvl_str]], ignore_index=True))
-    fr = np.log(ppt.noda[var][lvl, :])
+    
+    # 2. Check the data just before taking the logarithm
+    analysis_data_before_log = pd.concat([zero, analysis[lvl_str]], ignore_index=True) + epsilon
+    background_data_before_log = pd.concat([zero, background[lvl_str]], ignore_index=True) + epsilon
+    
+    print("\nAnalysis data before log:")
+    print(analysis_data_before_log)
+    print("\nBackground data before log:")
+    print(background_data_before_log)
+    
+    # --- END OF DEBUGGING SECTION ---
+
+    data_analysis_by_level = np.log(analysis_data_before_log)
+    data_backgroudn_by_level = np.log(background_data_before_log)
+    fr = np.log(ppt.noda[var][lvl, :] + epsilon)
 
     plt.figure(figsize=(9, 4))
     
-    # --- CORRECTED TITLE LINE ---
-    # Using an r-string (r"...") is better for LaTeX, and we add a space before "mb".
     plt.title(rf"$\mathrm{{{var_codes[var]}}} \ at \ {pslvl[lvl]} \ mb$")
 
     plt.plot(data_analysis_by_level, color="r", label="Analysis")
@@ -63,7 +86,7 @@ def single_error_plotter(analysis, background, var, lvl, ppt, plots_path):
 
 def main_general_plotter(df_params):
     root_path = Path.cwd()
-    exp_pth = root_path.parents[0] / "runs"
+    exp_pth = root_path.parent / "runs" 
 
     for _, row in df_params.iterrows():
         method_path = exp_pth / row["exp_path"]
@@ -71,6 +94,7 @@ def main_general_plotter(df_params):
         variables = row["variable"]
         levels = row["level"]
         grid_res = row["resolution"]
+        M = int(row["M"])
 
         if pd.isna(variables):
             variables = model_vars
@@ -86,14 +110,21 @@ def main_general_plotter(df_params):
         plots_path = method_path / "plots" / "errors"
 
         gs = grid_resolution(grid_res)
-        ppt = postpro_tools(grid_res, gs, method_path, 30)
+        ppt = postpro_tools(grid_res, gs, method_path, M)
         ppt.compute_NODA()
 
         Path(plots_path).mkdir(parents=True, exist_ok=True)
 
         for var in variables:
-            analysis = pd.read_csv(method_path / "results" / f"{var}_ana.csv")
-            bckg = pd.read_csv(method_path / "results" / f"{var}_bck.csv")
+            analysis_path = method_path / "results" / f"{var}_ana.csv"
+            bckg_path = method_path / "results" / f"{var}_bck.csv"
+
+            if not analysis_path.exists() or not bckg_path.exists():
+                print(f"Warning: Result files for {var} not found. Skipping.")
+                continue
+
+            analysis = pd.read_csv(analysis_path)
+            bckg = pd.read_csv(bckg_path)
 
             for lvl in levels:
                 if ("PSG" in var) and lvl > 0:
@@ -106,11 +137,7 @@ def main_general_plotter(df_params):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Creates a heatmap for a defined set of parameters "
-        + "using the specified configurations.\n"
-        + "Remember the config file must be a CSV containing the headers:\n"
-        + "setting,method,infla,mask,variable,level\n"
-        + "If no level or variable is set, default values will be used",
+        description="Creates error plots for a defined set of parameters.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -122,3 +149,4 @@ if __name__ == "__main__":
     print("* STARTJ - Reading input file {0}".format(input_file))
     df_params = pd.read_csv(input_file)
     main_general_plotter(df_params)
+
