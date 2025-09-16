@@ -1,0 +1,2 @@
+Nens,M,res_name,per,obs_steps,ini_steps,ini_times,syn_tests,folder_prep,code,par,path,code_path
+80,30,t21,0.05,2,3,12,True,../NLD_Paper,,True,../NLD_Paper/t21_80_0.05_30/,t21_80_0.05_30
