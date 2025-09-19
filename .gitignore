@@ -1,7 +1,2 @@
 *.err
 *.out
-/runs
-*.pyc
-/ENSF_experiment
-/ENSF_experiment_easy
-/NLD_Paper
