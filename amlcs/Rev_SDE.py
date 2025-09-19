@@ -2,8 +2,9 @@ import numpy as np
 import torch
 
 
+
 class REVERSE_SDE:
-    def __init__(self, pseudo_time_step, prior_ensemble, ensemble_size, obs, sigma, y_dim, scalefact, indxob, indx_indxob_linear, initial_std, likelihood_weight=1.0):
+    def __init__(self, pseudo_time_step, prior_ensemble, ensemble_size, obs, sigma, y_dim, scalefact, indxob, indx_indxob_linear, initial_std):
         self.p_time_step = pseudo_time_step
         self.x0 = np.copy(prior_ensemble)               ### Must use np.copy(), otherwise it will be changed globally when calling the class
         self.prior_ensemble = prior_ensemble
@@ -17,7 +18,7 @@ class REVERSE_SDE:
         self.indxob = indxob
         self.indx_indxob_linear = indx_indxob_linear
         self.initial_std = initial_std                  ### the initial sample std.
-        self.likelihood_weight = likelihood_weight # Store the weight
+
 
         ### if indx_obs_linear is None, it means the observation is fully nonlinear
         ### For example, the model state x = (x_0,x_1,x_2,x_3,x_4,x_5), totally 6 dimensions.
@@ -57,20 +58,9 @@ class REVERSE_SDE:
         # obs: (y_dim,)
         # xt: (ensemble, x_dim)
         # score_x: (ensemble, y_dim)
-        
-        # ADD a small epsilon for numerical stability
-        epsilon = 1e-9
-        
         score_x = np.zeros((self.ensemble_size,self.y_dim), np.float32)
-        
-        # UPDATE: Add epsilon to the denominator
-        denominator_linear = self.obs_sigma[indx_indxob_linear] ** 2 + epsilon
-        score_x[:, indx_indxob_linear] = (-(self.scalefact * xt[:, indx_indxob_linear] - self.obs[indx_indxob_linear]) / denominator_linear) * self.scalefact
-        
-        # UPDATE: Add epsilon to the denominator
-        denominator_nonlinear = self.obs_sigma[indx_indxob_nonlinear] ** 2 + epsilon
-        score_x[:, indx_indxob_nonlinear] = (-(np.arctan(self.scalefact * xt[:, indx_indxob_nonlinear]) - self.obs[indx_indxob_nonlinear]) / denominator_nonlinear) * (self.scalefact / (1. + (self.scalefact * xt[:, indx_indxob_nonlinear])**2))
-        
+        score_x[:, indx_indxob_linear] = (-(self.scalefact * xt[:, indx_indxob_linear] - self.obs[indx_indxob_linear]) / (self.obs_sigma[indx_indxob_linear] ** 2)) * self.scalefact
+        score_x[:, indx_indxob_nonlinear] = (-(np.arctan(self.scalefact * xt[:, indx_indxob_nonlinear]) - self.obs[indx_indxob_nonlinear]) / self.obs_sigma[indx_indxob_nonlinear] ** 2) * (self.scalefact / (1. + (self.scalefact * xt[:, indx_indxob_nonlinear])**2))
         tau = self.g_tau(t)
         return tau * score_x
 
@@ -78,70 +68,46 @@ class REVERSE_SDE:
         ## Normalization for x0
         mean_X0 = np.mean(self.x0[:,self.indxob], axis=0)                            ### (y_dim,)
         std_X0 = np.std(self.x0[:,self.indxob], axis=0)                              ### (y_dim,)
-        epsilon = 1e-9
-        self.x0[:,self.indxob] = (self.x0[:,self.indxob] - mean_X0) / (std_X0 + epsilon) ### (ensemble, y_dim)
-        #print("self.x0[:,self.indxob]",self.x0[:,self.indxob].shape)
-        
+        self.x0[:,self.indxob] = (self.x0[:,self.indxob] - mean_X0) / std_X0         ### (ensemble, y_dim)
+        print("self.x0[:,self.indxob]",self.x0[:,self.indxob].shape)
         ## Normalization for obs and obs_sigma
-        self.obs[indx_indxob_linear] = (self.obs[indx_indxob_linear] - self.scalefact * mean_X0[indx_indxob_linear]) / (std_X0[indx_indxob_linear] + epsilon)
-        self.obs[indx_indxob_nonlinear] = np.arctan(((np.tan(self.obs[indx_indxob_nonlinear]) / self.scalefact - mean_X0[indx_indxob_nonlinear]) / (std_X0[indx_indxob_nonlinear] + epsilon)) * self.scalefact)
-        self.obs_sigma[indx_indxob_linear] = ((self.obs_sigma[[self.indx_indxob_linear]] / self.scalefact) / (std_X0[indx_indxob_linear] + epsilon)) * self.scalefact
-        self.obs_sigma[indx_indxob_nonlinear] = np.where(abs(self.obs[indx_indxob_nonlinear]) < 1.55, self.obs_sigma[indx_indxob_nonlinear],self.obs_sigma[indx_indxob_nonlinear] / 0.000001) / ((0.01 * std_X0[indx_indxob_nonlinear]) + epsilon)
-        
+        self.obs[indx_indxob_linear] = (self.obs[indx_indxob_linear] - self.scalefact * mean_X0[indx_indxob_linear]) / std_X0[indx_indxob_linear]
+        self.obs[indx_indxob_nonlinear] = np.arctan(((np.tan(self.obs[indx_indxob_nonlinear]) / self.scalefact - mean_X0[indx_indxob_nonlinear]) / std_X0[indx_indxob_nonlinear]) * self.scalefact)
+        self.obs_sigma[indx_indxob_linear] = ((self.obs_sigma[[self.indx_indxob_linear]] / self.scalefact) / std_X0[indx_indxob_linear]) * self.scalefact
+        self.obs_sigma[indx_indxob_nonlinear] = np.where(abs(self.obs[indx_indxob_nonlinear]) < 1.55, self.obs_sigma[indx_indxob_nonlinear],self.obs_sigma[indx_indxob_nonlinear] / 0.000001) / (0.01 * std_X0[indx_indxob_nonlinear])
         return mean_X0, std_X0
 
     def reverse_SDE(self):
         indxunob = np.sort(np.setdiff1d(np.arange(self.x_dim), self.indxob))
         indx_indxob_linear = self.indx_indxob_linear
         indx_indxob_nonlinear = np.sort(np.setdiff1d(np.arange(self.y_dim), indx_indxob_linear))
-        #print("indx_indxob_linear",indx_indxob_linear)
-        #print("indx_indxob_nonlinear",indx_indxob_nonlinear)
+        print("indx_indxob_linear",indx_indxob_linear)
+        print("indx_indxob_nonlinear",indx_indxob_nonlinear)
+
 
         ### Normalization step
         mean_X0, std_X0 = self.normalize(indx_indxob_linear, indx_indxob_nonlinear)         ### (ensemble, y_dim)
-        #print("mean_X0",mean_X0,mean_X0.shape)
-        #print("std_X0",std_X0,std_X0.shape)
+        print("mean_X0",mean_X0,mean_X0.shape)
+        print("std_X0",std_X0,std_X0.shape)
         dt = 1.0 / self.p_time_step
+        #xt = torch.randn(self.ensemble_size, self.x_dim, device='cuda')
         torch.manual_seed(42)
-        self.x0_torch = torch.from_numpy(self.x0).float()
         xt = torch.randn(self.ensemble_size, self.y_dim)
         x_ens_full = np.zeros((self.ensemble_size, self.x_dim))
         x_ens_full[:, indxunob] = self.prior_ensemble[:, indxunob]
-        #print("x_ens_full",x_ens_full.mean(axis=0),x_ens_full.shape)
+        print("x_ens_full",x_ens_full.mean(axis=0),x_ens_full.shape)
         xt_array = np.zeros((100, self.y_dim))
         t = 1.0
         tolerance = 0.0001
-        
-        # ADD a small epsilon for numerical stability
-        epsilon = 1e-9
-
         for i in range(self.p_time_step):
             # prior score evaluation
             alpha_t = self.cond_alpha(t)
             sigma2_t = self.cond_sigma_sq(t)
             diffuse = self.g(t)
             drift_fun = self.f
-                # ADD THE NEW DEBUGGING BLOCK
-            xt_np = xt.numpy()
-            if i % 10 == 0:
-                prior_score_term_torch = (xt - alpha_t * self.x0_torch[:, self.indxob]) / (sigma2_t + epsilon)
-                likelihood_score_np = self.score_likelihood(xt_np, t, indx_indxob_linear,  indx_indxob_nonlinear)
+            # Update
+            xt_temp = xt - dt * (drift_fun(t) * xt + diffuse ** 2 * ((xt - alpha_t * self.x0[:,self.indxob]) / sigma2_t) - diffuse ** 2 * self.score_likelihood(xt, t, indx_indxob_linear,  indx_indxob_nonlinear)) + np.sqrt(dt) * diffuse * torch.randn_like(xt)
 
-                prior_max_vals = torch.max(torch.abs(prior_score_term_torch), dim=0).values
-                likelihood_max_vals = np.max(np.abs(likelihood_score_np), axis=0)
-
-                problem_prior_idx = torch.argmax(prior_max_vals).item()
-                problem_likelihood_idx = np.argmax(likelihood_max_vals)
-
-                print(f"--- Step {i}, t={t:.4f} ---")
-                print(f"Max Likelihood Score: {likelihood_max_vals[problem_likelihood_idx]:.4e} at component index [{problem_likelihood_idx}]")
-                print(f"Max Prior Score: {prior_max_vals[problem_prior_idx]:.4e} at component index [{problem_prior_idx}]")
-
-            # REPLACE the old xt_temp update line with this stabilized and weighted version:
-            prior_score_term = (xt - alpha_t * self.x0_torch[:, self.indxob]) / (sigma2_t + epsilon)
-            likelihood_term_np = self.score_likelihood(xt_np, t, indx_indxob_linear,  indx_indxob_nonlinear)
-            likelihood_term_torch = torch.from_numpy(likelihood_term_np).float()
-            xt_temp = xt - dt * (drift_fun(t) * xt + diffuse ** 2 * prior_score_term - self.likelihood_weight * diffuse ** 2 * likelihood_term_torch) + np.sqrt(dt) * diffuse * torch.randn_like(xt)
 
             if (abs(xt_temp.mean(dim=0) - xt_array.mean(axis=0)) < tolerance).all() and i > 0.5 * self.p_time_step:
                 xt = xt_temp
@@ -156,15 +122,19 @@ class REVERSE_SDE:
             t = t - dt
 
         ### Denormalization fot xt
-        #print("xt",xt.mean(axis=0),xt.shape)
+        print("xt",xt.mean(axis=0),xt.shape)
         x_ens = mean_X0 + np.array(xt) * std_X0
-        #print("x_ens", x_ens.mean(axis=0), x_ens.shape)
+        print("x_ens", x_ens.mean(axis=0), x_ens.shape)
         x_ens_full[:, self.indxob] = x_ens
 
-        ## Inflation
+
+
+        ## Inflation: we want to restore "std(x_ens)" to the initial std "self.initial_std" in order to discentralize the ensembles.
+        ## Here we change the std(x_ens) without changing the mean(x_ens).
         mean_infla = np.mean(x_ens_full, axis=0)
         std_infla = np.std(x_ens_full, axis=0)
-        Xens_infla = (x_ens_full - mean_infla) / (std_infla + epsilon) # Added epsilon here too for safety
+        Xens_infla = (x_ens_full - mean_infla) / std_infla
         x_ens_analysis_new = Xens_infla * self.initial_std + mean_infla
+
 
         return np.array(x_ens_analysis_new)

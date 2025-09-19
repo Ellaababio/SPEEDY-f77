@@ -44,8 +44,6 @@ def main():
     obs_plc      = [int(v) for v in plac_obs];
     l_snap       = df_par['list_snapshots'].iloc[0].strip().split(',');
     option_mask  = int(df_par['option_mask'].iloc[0]);
-    p_time_step = int(df_par['p_time_step'].iloc[0])
-    likelihood_weight = float(df_par['likelihood_weight'].iloc[0])
     
     list_k = [int(v) for v in l_snap];
 
@@ -106,8 +104,7 @@ def main():
     nm = numerical_model(path_method, gs, Nens, par=par);
     nm.define_relations(option=option_mask);
     nm.load_settings(exp_settings, args);
-    print("--- Assimilation Block Structure (mask_cor) ---")
-    print(nm.mask_cor);
+    #print(nm.mask_cor);
      
     
     #1.3 Mesh grid is created
@@ -117,7 +114,7 @@ def main():
     
     
     #Setting the sequential data assimilation method
-    seq_da = sequential_method(method).get_instance(nm, infla, Nens, p_time_step=p_time_step, likelihood_weight=likelihood_weight)
+    seq_da = sequential_method(method).get_instance(nm, infla, Nens);
     
     ob.build_observational_network(gs, nm, s=s);
     ob.build_synthetic_observations(nm, rs, M); 
@@ -128,59 +125,33 @@ def main():
     tm_bck =  time_metric(nm, 'bck');
     tm_ana =  time_metric(nm, 'ana');
     
-    
-    # --- Main Assimilation Loop ---
     for k in range(0, M):
-        print(f"\n--- Assimilation Cycle {k+1}/{M} ---")
-        seq_da.load_background_ensemble()
+        seq_da.load_background_ensemble();
         
-        tm_bck.start_time()
-        seq_da.prepare_background()
-        tm_bck.check_time()
+        tm_bck.start_time();
+        seq_da.prepare_background();
+        tm_bck.check_time();
         
-        tm_ana.start_time()
-        seq_da.prepare_analysis(ob, k)
-        seq_da.perform_assimilation(ob)
-        tm_ana.check_time()
+        tm_ana.start_time();
+        seq_da.prepare_analysis(ob, k);
+        seq_da.perform_assimilation(ob);
+        tm_ana.check_time();
         
-        # --- START OF DEBUGGING SECTION ---
-        print(f"--- Debugging DA output for cycle {k+1} ---")
+        em_bck.compute_error_step(k, seq_da.XB, rs.x_ref[k]);
+        em_ana.compute_error_step(k, seq_da.XA, rs.x_ref[k]);
         
-        # 1. Check the analysis ensemble (XA) produced by your filter
-        # It should be a numpy array with shape (state_dim, N_ens)
-        print(f"Type of seq_da.XA: {type(seq_da.XA)}")
-        if hasattr(seq_da, 'XA_map') and seq_da.XA_map is not None:
-             print(f"Shape of first block in seq_da.XA_map: {seq_da.XA_map[0].shape}")
-             print(f"Mean of first block: {np.mean(seq_da.XA_map[0])}, Std: {np.std(seq_da.XA_map[0])}")
-        else:
-            print("seq_da.XA_map not found or is None.")
-
-        # 2. Check the reference state (the "truth") for this cycle
-        print(f"\nType of rs.x_ref[{k}]: {type(rs.x_ref[k])}")
-        if rs.x_ref[k] is not None:
-            print(f"Shape of first block in reference state: {rs.x_ref[k][0].shape}")
-            print(f"Mean of first block: {np.mean(rs.x_ref[k][0])}")
-        else:
-            print(f"Reference state at step {k} is None.")
+        em_bck.store_all_results();
+        em_ana.store_all_results();
+        tm_bck.store_all_results();
+        tm_ana.store_all_results();
         
-        # --- END OF DEBUGGING SECTION ---
-
-        # To this:
-        em_bck.compute_error_step(k, seq_da.XB, rs.x_ref[k])
-        em_ana.compute_error_step(k, seq_da.XA, rs.x_ref[k])
+        seq_da.check_time_store(k, list_k);
         
-        em_bck.store_all_results()
-        em_ana.store_all_results()
-        tm_bck.store_all_results()
-        tm_ana.store_all_results()
-        
-        seq_da.check_time_store(k, list_k)
-        
-        seq_da.perform_forecast()
+        seq_da.perform_forecast();
     
-    seq_da.clear_all()
-    exit()
+    seq_da.clear_all();
 
+    exit();
     
 if __name__ == "__main__":
     main();
