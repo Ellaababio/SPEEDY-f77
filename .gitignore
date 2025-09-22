@@ -9,3 +9,4 @@ amlcs/t21_ENSF.csv
 ENSF_main_da.sh
 ENSF_preprocess.sh
 amlcs/t21_ENSF.csv
+*.npy
