@@ -16,13 +16,14 @@ module load anaconda/3.11.5
 eval "$(conda shell.bash hook)"
 conda activate speedy_da_env
 
-# Adjust these two lines to the exact experiment path you want to analyze
+# >>> adjust RUN_ROOT to your experiment directory <<<
 RUN_ROOT="../runs/t21_50_0.05_5_ReverseSDE_1_5_100"
 GAUSS_ROOT="${RUN_ROOT}/gauss_checks"
+BLOCK_MAP="${RUN_ROOT}/block_map.json"   # dumped during assimilation by perform_assimilation
 
 cd ../amlcs
 
-# 1) Run the per-block validator (same logic as your original script)
+# 1) Validate each saved background block
 for f in "${GAUSS_ROOT}"/XB_block_*.npy; do
   bname=$(basename "$f" .npy)
   outdir="${GAUSS_ROOT}/gauss_${bname}"
@@ -30,9 +31,17 @@ for f in "${GAUSS_ROOT}"/XB_block_*.npy; do
   srun python gaussian_validation.py --npy "$f" --outdir "$outdir" --psteps 200 --eps_alpha 0.05
 done
 
-# 2) Aggregate all per-block summaries into a single CSV
+# 2) Aggregate results across blocks (attach var/level mapping if available)
 OUT_COMBINED="${RUN_ROOT}/gauss_overview.csv"
+MAP_ARG=""
+if [ -f "${BLOCK_MAP}" ]; then
+  MAP_ARG="--map ${BLOCK_MAP}"
+  echo "Found block map: ${BLOCK_MAP}"
+else
+  echo "Block map not found at ${BLOCK_MAP}; proceeding without vars/levels."
+fi
+
 echo "Aggregating results to ${OUT_COMBINED}"
-srun python analyze_gaussian_results.py --root "$GAUSS_ROOT" --out "$OUT_COMBINED" --ks95_warn 0.1 --print_top 15
+srun python analyze_gaussian_results.py --root "$GAUSS_ROOT" --out "$OUT_COMBINED" --ks95_warn 0.1 --print_top 15 ${MAP_ARG}
 
 echo "--- Validation+Analysis Job Finished ---"
