@@ -550,7 +550,7 @@ class ReverseSDE(ensemble_DA):
         import torch as _torch
 
         # -------- CONFIG --------
-        DEBUG_EVERY = 10
+        DEBUG_EVERY = 20
         SAVE_GAUSS_BLOCKS = True
         GAUSS_DIRNAME = "gauss_checks"
         # ------------------------

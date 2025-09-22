@@ -17,7 +17,7 @@ eval "$(conda shell.bash hook)"
 conda activate speedy_da_env
 
 # Adjust these two lines to the exact experiment path you want to analyze
-RUN_ROOT="../runs/t21_10_0.05_5_ReverseSDE_1_5_100"
+RUN_ROOT="../runs/t21_50_0.05_5_ReverseSDE_1_5_100"
 GAUSS_ROOT="${RUN_ROOT}/gauss_checks"
 
 cd ../amlcs
