@@ -457,6 +457,83 @@ class ReverseSDE(ensemble_DA):
     def _g_tau(self, t):
         # likelihood tempering (tau) as in the original code
         return 1.0 - t
+    
+    def prepare_background(self):
+        """
+        Build per-block background structures (just like other methods),
+        and cache statistics needed later (means/stds).
+        """
+        self.XB_map = []
+        gr = self.nm.gs
+        for msk_cor, _unused in zip(self.nm.mask_cor, getattr(gr, "lpr", gr.lbo)):
+            XB_block = self.get_ensemble_block(msk_cor)       # shape: (n, Nens)
+            xb_block = XB_block.mean(axis=1, keepdims=True)   # (n,1)
+            DX_block = XB_block - xb_block                    # (n, Nens)
+            # Per-dimension spread (used for post inflation to restore initial std)
+            std_init = DX_block.std(axis=1)                   # (n,)
+            self.XB_map.append({
+                "XB_b": XB_block,
+                "xb_b": xb_block,
+                "DX_b": DX_block,
+                "std_init": std_init
+            })
+        # nothing returned; stored on self
+    def prepare_analysis(self, ob, k, args=None):
+        """
+        Build observed indices per block from sparse H and get 1-D y and sigma that
+        match the H-row order. Works with dense or sparse R/Ri.
+        """
+        import numpy as _np
+        import scipy.sparse as _spa
+
+        self.obs_map = []
+
+        for block, XB_info in enumerate(self.XB_map):
+            # Sparse H (m x n)
+            H_block = ob.obs_H_sparse[block]
+            # R info may contain 'R' (cov) and/or 'Ri' (precision)
+            R_info = ob.obs_R_sparse[block]
+            # Observations for this time step/block (could be (m,), (m,1), etc.)
+            y_block = _np.asarray(ob.y_obs[k][block])
+
+            # --- derive ordered state-column indices each H row selects ---
+            Hc = H_block.tocoo()
+            order = _np.argsort(Hc.row)
+            idx_observed = Hc.col[order].astype(_np.int64)  # (m,)
+            m = idx_observed.size
+
+            # --- y must be 1-D (m,) and aligned to H rows ---
+            y_block = y_block.reshape(-1)[:m]  # force 1-D, trim just in case
+
+            # --- robust diagonal extraction from R or Ri ---
+            def _diag_from(x):
+                if x is None:
+                    return None
+                if _spa.issparse(x):
+                    return x.diagonal()
+                x = _np.asarray(x)
+                if x.ndim == 1:
+                    return x
+                if x.ndim == 2:
+                    return _np.diag(x)
+                raise ValueError("R/Ri must be 1D or 2D (or sparse)")
+            diag_R  = _diag_from(R_info.get("R",  None))
+            diag_Ri = _diag_from(R_info.get("Ri", None))
+
+            eps = _np.finfo(float).eps
+            if diag_R is not None:
+                sigma = _np.sqrt(_np.maximum(eps, diag_R)).reshape(-1)[:m]
+            elif diag_Ri is not None:
+                sigma = 1.0 / _np.sqrt(_np.maximum(eps, diag_Ri)).reshape(-1)[:m]
+            else:
+                raise ValueError("Neither R nor Ri found in ob.obs_R_sparse[block].")
+
+            # Save per-block obs info (all 1-D arrays)
+            self.obs_map.append({
+                "idx_observed": idx_observed,
+                "y": y_block.astype(float),
+                "sigma": sigma.astype(float),
+            })
 
     # ====== ensemble_DA hooks ======
     def perform_assimilation(self, ob):

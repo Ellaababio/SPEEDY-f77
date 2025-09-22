@@ -9,18 +9,30 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=4G
 
-echo "--- Validation Job Started ---"
+echo "--- Validation+Analysis Job Started ---"
 
 module purge
 module load anaconda/3.11.5
 eval "$(conda shell.bash hook)"
 conda activate speedy_da_env
 
+# Adjust these two lines to the exact experiment path you want to analyze
+RUN_ROOT="../runs/t21_10_0.05_5_ReverseSDE_1_5_100"
+GAUSS_ROOT="${RUN_ROOT}/gauss_checks"
+
 cd ../amlcs
-for f in ../runs/t21_10_0.05_5_ReverseSDE_1_5_100/gauss_checks/XB_block_*.npy; do
+
+# 1) Run the per-block validator (same logic as your original script)
+for f in "${GAUSS_ROOT}"/XB_block_*.npy; do
   bname=$(basename "$f" .npy)
-  srun python gaussian_validation.py --npy "$f" --outdir "../runs/t21_10_0.05_5_ReverseSDE_1_5_100/gauss_checks/gauss_${bname}" --psteps 200 --eps_alpha 0.05
+  outdir="${GAUSS_ROOT}/gauss_${bname}"
+  echo "Validating $f -> ${outdir}"
+  srun python gaussian_validation.py --npy "$f" --outdir "$outdir" --psteps 200 --eps_alpha 0.05
 done
 
+# 2) Aggregate all per-block summaries into a single CSV
+OUT_COMBINED="${RUN_ROOT}/gauss_overview.csv"
+echo "Aggregating results to ${OUT_COMBINED}"
+srun python analyze_gaussian_results.py --root "$GAUSS_ROOT" --out "$OUT_COMBINED" --ks95_warn 0.1 --print_top 15
 
-echo "--- Validation Job Finished ---"
+echo "--- Validation+Analysis Job Finished ---"
