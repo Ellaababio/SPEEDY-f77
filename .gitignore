@@ -1,6 +1,5 @@
 *.err
 *.out
-runs/*
 *.pyc
 /ENSF_experiment
 /ENSF_experiment_easy
@@ -11,4 +10,14 @@ ENSF_preprocess.sh
 amlcs/t21_ENSF.csv
 *.npy
 /ENSF_gaussian_check
+# 1. Ignore everything inside the 'runs' directory by default
+runs/*
+
+# 2. BUT, do NOT ignore the specific subdirectory containing the file
+!runs/t21_50_0.05_5_ReverseSDE_1_5_100/
+
+# 3. NOW, re-ignore all the contents of that subdirectory...
+runs/t21_50_0.05_5_ReverseSDE_1_5_100/*
+
+# 4. ...and FINALLY, make the exception for the one file you want to track.
 !runs/t21_50_0.05_5_ReverseSDE_1_5_100/block_map.json
