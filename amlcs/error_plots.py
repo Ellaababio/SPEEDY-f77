@@ -35,53 +35,54 @@ pslvl = [30, 100, 200, 300, 500, 700, 850, 925]
 
 
 def single_error_plotter(analysis, background, var, lvl, ppt, plots_path):
-    lvl_str = str(lvl)
-    
-    # --- START OF DEBUGGING SECTION ---
-    print(f"\n--- Debugging: Plotting {var} at level {lvl} ---")
-    
-    # 1. Check the raw data from the CSV files for this level
-    print("Raw Analysis Error data:")
-    print(analysis[lvl_str])
-    print("\nRaw Background Error data:")
-    print(background[lvl_str])
-    
-    # Add a small number (epsilon) to avoid log(0) errors
-    epsilon = 1e-12
-    
-    zero = pd.Series(background[lvl_str].values[0])
-    
-    # 2. Check the data just before taking the logarithm
-    analysis_data_before_log = pd.concat([zero, analysis[lvl_str]], ignore_index=True) + epsilon
-    background_data_before_log = pd.concat([zero, background[lvl_str]], ignore_index=True) + epsilon
-    
-    print("\nAnalysis data before log:")
-    print(analysis_data_before_log)
-    print("\nBackground data before log:")
-    print(background_data_before_log)
-    
-    # --- END OF DEBUGGING SECTION ---
 
-    data_analysis_by_level = np.log(analysis_data_before_log)
-    data_backgroudn_by_level = np.log(background_data_before_log)
-    fr = np.log(ppt.noda[var][lvl, :] + epsilon)
+    lvl_str = str(lvl)
+    eps = 1e-12
+
+    ana_raw = analysis[lvl_str].to_numpy(dtype=float)
+    bkg_raw = background[lvl_str].to_numpy(dtype=float)
+    noda_raw = np.asarray(ppt.noda[var][lvl, :], dtype=float)
+
+    # equalize lengths first
+    L = min(len(ana_raw), len(bkg_raw), len(noda_raw))
+    ana_raw, bkg_raw, noda_raw = ana_raw[:L], bkg_raw[:L], noda_raw[:L]
+    if L == 0:
+        return
+
+    # ---- choose a common anchor ----
+    # Option A (recommended): anchor on NoDA's first value
+    anchor = noda_raw[:1]
+    # Option B: anchor on Background's first value
+    # anchor = bkg_raw[:1]
+
+    # prepend the SAME anchor to all
+    ana = np.concatenate([anchor, ana_raw])
+    bkg = np.concatenate([anchor, bkg_raw])
+    noda = np.concatenate([anchor, noda_raw])
+
+    # log with epsilon
+    ana_log = np.log(ana + eps)
+    bkg_log = np.log(bkg + eps)
+    noda_log = np.log(noda + eps)
+
+    # first TRUE cycle is index 1 (index 0 is the visual anchor)
+    if abs(bkg_log[1] - noda_log[1]) > 1e-6:
+        print(f"[plot][warn] {var} lvl={lvl}: Background vs NoDA differ at M=1 by {abs(bkg_log[1]-noda_log[1]):.3e} (log-scale).")
+
+    xs = np.arange(0, L + 1)  # 0 = anchor, 1..L = cycles
 
     plt.figure(figsize=(9, 4))
-    
-    plt.title(rf"$\mathrm{{{var_codes[var]}}} \ at \ {pslvl[lvl]} \ mb$")
-
-    plt.plot(data_analysis_by_level, color="r", label="Analysis")
-    plt.plot(data_backgroudn_by_level, color="b", label="Background")
-    plt.plot(fr, color="k", label="NODA")
-
-    plt.legend()
-    plt.ylabel(r"$log(\mathcal{l}_2)$")
-    plt.xlabel(r"$\mathrm{Assimilation\;Step}$")
+    plt.title(rf"$\mathrm{{{var_codes[var]}}} \ at \ {pslvl[lvl]} \ \mathrm{{mb}}$")
+    plt.plot(xs, ana_log, color="r", label="Analysis")
+    plt.plot(xs, bkg_log, color="b", label="Background")
+    plt.plot(xs, noda_log, color="k", label="NODA")
+    plt.ylabel(r"$\log(\mathcal{l}_2)$")
+    plt.xlabel(r"$\mathrm{Assimilation\ Step}$")
     plt.legend(loc="best", prop={"size": 14})
     plt.tight_layout()
-    plt.autoscale()
     plt.savefig(plots_path / f"single_error_{var}_{lvl}.png", bbox_inches="tight")
     plt.close()
+
 
 
 def main_general_plotter(df_params):
