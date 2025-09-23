@@ -1,2 +1,2 @@
-exp_path,resolution,M,variable,level
-t21_80_0.05_30_LEnKF_1_5_108,t21,30,,
+exp_path,resolution,M,variable,level,plot_dir_name
+t21_80_0.05_30_LEnKF_1_5_108,t21,30,,,.05_30_LEnKF_1_5_108
