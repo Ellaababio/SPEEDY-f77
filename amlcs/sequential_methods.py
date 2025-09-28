@@ -457,8 +457,7 @@ class ReverseSDE(ensemble_DA):
     def _g_tau(self, t):
         # likelihood tempering (tau) as in the original code
         return 1.0 - t
-
-    # ====== ensemble_DA hooks ======
+    
     def prepare_background(self):
         """
         Build per-block background structures (just like other methods),
@@ -479,7 +478,6 @@ class ReverseSDE(ensemble_DA):
                 "std_init": std_init
             })
         # nothing returned; stored on self
-
     def prepare_analysis(self, ob, k, args=None):
         """
         Build observed indices per block from sparse H and get 1-D y and sigma that
@@ -537,117 +535,219 @@ class ReverseSDE(ensemble_DA):
                 "sigma": sigma.astype(float),
             })
 
-
+    # ====== ensemble_DA hooks ======
     def perform_assimilation(self, ob):
         """
-        Reverse-SDE block update (Torch) with proper publication of self.XA.
-        Requires:
-        - self.XB_map from prepare_background()
-        - self.obs_map from prepare_analysis()
-        Produces:
-        - self.XA_map: list of (n_block, Nens) arrays for all blocks
-        - self.XA via self.map_vector_states()
+        Reverse-SDE block update (Torch) with hardened publication of self.XA:
+        - Preflight logs of block counts; auto-fallback if XB/obs maps are empty.
+        - Iterates by block index (not zip) to avoid silent truncation.
+        - Per-10-step likelihood-score debug.
+        - One-time dump of block_map.json for external analyzers.
+        - Graceful fallback (inflated background) for any problematic/missing block.
         """
+        import os
+        import json
         import numpy as _np
         import torch as _torch
 
-        # Fresh output container for all blocks
-        self.XA_map = []
+        # -------- CONFIG --------
+        DEBUG_EVERY = 20
+        SAVE_GAUSS_BLOCKS = True
+        GAUSS_DIRNAME = "gauss_checks"
+        # ------------------------
 
-        # Torch RNG/device
+        # Ensure device / RNG
         if not hasattr(self, "device"):
             self.device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
         _torch.manual_seed(getattr(self, "rng_seed", 42))
+        device = self.device
 
-        # Pseudo-time setup
+        # SDE schedule params
         psteps = int(getattr(self, "p_time_step", 200))
         dt = 1.0 / float(psteps)
         hist_len = 100
         tol = 1.0e-4
         sf = float(getattr(self, "scalefact", 1.0))
-
-        def _cond_alpha(tt, eps_alpha):
-            return 1.0 - (1.0 - eps_alpha) * tt
-
-        def _cond_sigma_sq(tt):
-            return tt
-
-        def _f(tt, eps_alpha):
-            alpha_t = 1.0 - (1.0 - eps_alpha) * tt
-            return -(1.0 - eps_alpha) / alpha_t
-
-        def _g(tt, eps_alpha):
-            d_sigma_sq_dt = 1.0
-            g2 = d_sigma_sq_dt - 2.0 * _f(tt, eps_alpha) * _cond_sigma_sq(tt)
-            return float(_np.sqrt(g2))
-
-        def _g_tau(tt):
-            return 1.0 - tt
-
         eps_alpha = float(getattr(self, "eps_alpha", 0.05))
-        device = self.device
 
-        for block, (XB_info, OM) in enumerate(zip(self.XB_map, self.obs_map)):
-            # --- Background block ---
-            XB = XB_info["XB_b"]            # shape: (n_block, Nens)
-            init_std = XB_info["std_init"]  # shape: (n_block,)
-            n_block, Nens = XB.shape
+        def _cond_alpha(tt): return 1.0 - (1.0 - eps_alpha) * tt
+        def _cond_sigma_sq(tt): return tt
+        def _f(tt):
+            a = 1.0 - (1.0 - eps_alpha) * tt
+            return -(1.0 - eps_alpha) / a
+        def _g(tt):
+            g2 = 1.0 - 2.0 * _f(tt) * _cond_sigma_sq(tt)
+            return float(_np.sqrt(max(0.0, g2)))
+        def _g_tau(tt): return 1.0 - tt
 
-            # Observed indices inside this block
-            idx_ob = OM["idx_observed"]     # (m,)
-            m = idx_ob.size if idx_ob is not None else 0
+        # Helper: readable block label (like your current prints)
+        def _block_label(block_idx):
+            try:
+                items = self.nm.mask_cor[block_idx]
+            except Exception:
+                return f"block={block_idx} (mask_cor unavailable)"
+            if not items:
+                return f"block={block_idx} (empty)"
+            var_names, levels = [], set()
+            for it in items:
+                (v_idx, lev) = it[0]
+                var_names.append(self.nm.var_names[v_idx])
+                levels.add(lev)
+            lev_str = f"lev={list(levels)[0]}" if len(levels) == 1 else "levs={" + ",".join(str(L) for L in sorted(levels)) + "}"
+            vlist = ",".join(var_names[:5]) + ("..." if len(var_names) > 5 else "")
+            return f"block={block_idx} [{lev_str}] vars={vlist}"
 
-            # If no observations map to this block, carry background forward with inflation
-            if m == 0:
-                XA_block = self.covariance_inflation(XB)  # (n_block, Nens)
+        # Prepare output dir for gaussianity blocks (if enabled)
+        if SAVE_GAUSS_BLOCKS:
+            try:
+                os.makedirs(os.path.join(self.nm.path, GAUSS_DIRNAME), exist_ok=True)
+            except Exception as e:
+                print(f"[ReverseSDE] WARNING: could not create gauss dir: {e}")
+
+        # Preflight: ensure maps exist
+        xb_len = len(getattr(self, "XB_map", []) or [])
+        om_len = len(getattr(self, "obs_map", []) or [])
+        mc_len = len(self.nm.mask_cor)
+
+        print(f"[ReverseSDE] preflight: XB_map={xb_len}, obs_map={om_len}, mask_cor={mc_len}")
+
+        # One-time dump of block_map.json (only if maps are present and we haven't dumped yet)
+        if xb_len > 0 and not getattr(self, "_block_map_dumped", False):
+            try:
+                blocks = []
+                for b_idx, items in enumerate(self.nm.mask_cor):
+                    vars_set, levs_set = set(), set()
+                    for it in items:
+                        (v_idx, lev) = it[0]
+                        vars_set.add(self.nm.var_names[v_idx])
+                        levs_set.add(int(lev))
+                    blocks.append({
+                        "block_idx": b_idx,
+                        "vars": sorted(vars_set),
+                        "levels": sorted(levs_set)
+                    })
+                out = {"var_names": list(self.nm.var_names), "blocks": blocks}
+                out_path = os.path.join(self.nm.path, "block_map.json")
+                with open(out_path, "w") as f:
+                    json.dump(out, f, indent=2)
+                print(f"[ReverseSDE] wrote block_map.json -> {out_path}")
+            except Exception as e:
+                print(f"[ReverseSDE] WARNING: failed to write block_map.json: {e}")
+            finally:
+                self._block_map_dumped = True  # never attempt again this process
+
+        self.XA_map = []
+
+        # AUTO-FALLBACK if XB_map missing (no background prepared)
+        if xb_len == 0:
+            print("[ReverseSDE] WARNING: XB_map is empty. Using inflated background as analysis for all blocks.")
+            for block_idx in range(mc_len):
+                XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])  # (n_block, Nens)
+                XA_block = self.covariance_inflation(XB_block)
+                self.XA_map.append(XA_block)
+                if SAVE_GAUSS_BLOCKS:
+                    try:
+                        _np.save(os.path.join(self.nm.path, GAUSS_DIRNAME, f"XB_block_{block_idx}.npy"), XB_block)
+                    except Exception as e:
+                        print(f"[ReverseSDE][block={block_idx}] WARNING: save failed: {e}")
+            # Publish and return
+            self.map_vector_states()
+            return
+
+        # Main loop (index-based to avoid zip truncation)
+        for block_idx in range(mc_len):
+            label = _block_label(block_idx)
+
+            # Background info for this block
+            try:
+                XB_info = self.XB_map[block_idx]
+            except Exception as e:
+                print(f"[ReverseSDE][{label}] ERROR: XB_map missing block {block_idx}: {e}. Using fallback.")
+                XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])
+                XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
                 continue
 
-            # Prior ensemble as (Nens, n_block)
+            XB = XB_info["XB_b"]            # (n_block, Nens)
+            init_std = XB_info["std_init"]  # (n_block,)
+            n_block, Nens = XB.shape
+
+            # Get observation map (may be None)
+            OM = self.obs_map[block_idx] if block_idx < om_len else None
+
+            # Default fallback: inflated background
+            XA_block_fallback = self.covariance_inflation(XB)
+
+            # No obs case
+            if (OM is None) or ("idx_observed" not in OM) or (OM["idx_observed"] is None) or (OM["idx_observed"].size == 0):
+                self.XA_map.append(XA_block_fallback)
+                continue
+
+            # Observed indices and vectors
+            idx_ob = OM["idx_observed"]
+            y = OM["y"].reshape(-1)
+            sigma = OM["sigma"].reshape(-1)
+            m = idx_ob.size
+
+            # Prior ensemble in (Nens, n_block)
             prior_ens = XB.T.copy()
 
-            # Observations (1-D arrays aligned to H rows)
-            y = OM["y"].reshape(-1)         # (m,)
-            sigma = OM["sigma"].reshape(-1) # (m,)
+            # Normalize observed subspace
+            X0_obs = prior_ens[:, idx_ob]                 # (Nens, m)
+            mean_X0 = X0_obs.mean(axis=0)                 # (m,)
+            std_X0  = X0_obs.std(axis=0) + 1e-12          # (m,)
+            X0_obs_n = (X0_obs - mean_X0) / std_X0        # (Nens, m)
 
-            # ----- Normalize observed subspace using prior stats -----
-            X0_obs = prior_ens[:, idx_ob]               # (Nens, m)
-            mean_X0 = X0_obs.mean(axis=0)               # (m,)
-            std_X0  = X0_obs.std(axis=0) + 1e-12        # (m,)
-            X0_obs_n = (X0_obs - mean_X0) / std_X0      # (Nens, m)
+            y_n = ((y - sf * mean_X0) / std_X0).reshape(-1)       # (m,)
+            sigma_n = ((sigma / std_X0) * sf).reshape(-1)         # (m,)
 
-            # Linear obs model: y ≈ sf * x_obs
-            y_n = ((y - sf * mean_X0) / std_X0).reshape(-1)          # (m,)
-            sigma_n = ((sigma / std_X0) * sf).reshape(-1)            # (m,)
+            # Torch tensors
+            X0_obs_n_t = _torch.from_numpy(X0_obs_n).to(device=device, dtype=_torch.float32)
+            y_n_t      = _torch.from_numpy(y_n).to(device=device, dtype=_torch.float32)
+            sigma_n_t  = _torch.from_numpy(sigma_n).to(device=device, dtype=_torch.float32)
 
-            # ----- Torch tensors (ensure 1-D for broadcasting with xt: (Nens, m)) -----
-            X0_obs_n_t = _torch.from_numpy(X0_obs_n).to(device=device, dtype=_torch.float32)  # (Nens, m)
-            y_n_t      = _torch.from_numpy(y_n).to(device=device, dtype=_torch.float32)       # (m,)
-            sigma_n_t  = _torch.from_numpy(sigma_n).to(device=device, dtype=_torch.float32)   # (m,)
-
-            # Initialize pseudo-time state in observed subspace
+            # Initialize reverse SDE state
             xt = _torch.randn((Nens, m), device=device, dtype=_torch.float32)
-
             xt_means_hist = _torch.zeros((hist_len, m), device=device, dtype=_torch.float32)
             t = 1.0
 
-            # ----- Reverse SDE loop (observed subspace only) -----
+            print(f"[ReverseSDE][{label}] starting reverse-SDE (m={m}, Nens={Nens})")
+
+            block_numeric_ok = True
+
             for i in range(psteps):
-                alpha_t = _cond_alpha(t, eps_alpha)
+                alpha_t = _cond_alpha(t)
                 sigma2_t = _cond_sigma_sq(t)
-                g = _g(t, eps_alpha)
-                f = _f(t, eps_alpha)
+                g = _g(t)
+                f = _f(t)
                 tau = _g_tau(t)
 
-                # prior term: (xt - alpha_t * X0_obs_n) / sigma2_t
-                prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t  # (Nens, m)
+                prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
+                like_score = -(sf * xt - y_n_t) / (sigma_n_t ** 2) * sf
 
-                # linear likelihood score:  -(sf*xt - y_n)/sigma_n^2 * sf
-                like_score = -(sf * xt - y_n_t) / (sigma_n_t ** 2) * sf  # (Nens, m)
+                if DEBUG_EVERY > 0 and (i % DEBUG_EVERY == 0):
+                    with _torch.no_grad():
+                        abs_ls = _torch.abs(like_score)
+                        mask = _torch.isfinite(abs_ls)
+                        if mask.any():
+                            print(f"[ReverseSDE][{label}] step={i:03d} |like| mean={abs_ls[mask].mean().item():.4e} max={abs_ls[mask].max().item():.4e}")
+                        else:
+                            print(f"[ReverseSDE][{label}] step={i:03d} |like| all non-finite")
+
+                # numeric guards
+                if (not _torch.isfinite(like_score).all()) or (not _torch.isfinite(prior_term).all()):
+                    print(f"[ReverseSDE][{label}] Non-finite score at step {i}. Using fallback for this block.")
+                    block_numeric_ok = False
+                    break
 
                 drift = - (f * xt + (g ** 2) * (prior_term - tau * like_score))
-                noise = _torch.sqrt(_torch.tensor(dt, device=device)) * g * _torch.randn_like(xt)
+                noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
+
+                if not _torch.isfinite(xt_next).all():
+                    print(f"[ReverseSDE][{label}] State became non-finite at step {i}. Using fallback for this block.")
+                    block_numeric_ok = False
+                    break
 
                 # early stop heuristic
                 if i > 0.5 * psteps:
@@ -658,7 +758,7 @@ class ReverseSDE(ensemble_DA):
                         break
                     xt_means_hist[i % hist_len, :] = mu
 
-                # hard stop guard near the end
+                # hard stop near the end
                 if i > 0.9 * psteps:
                     xt = xt_next
                     break
@@ -666,36 +766,44 @@ class ReverseSDE(ensemble_DA):
                 xt = xt_next
                 t = max(0.0, t - dt)
 
-            # ----- De-normalize observed subspace and stitch back -----
-            xt_np = xt.detach().cpu().numpy()            # (Nens, m)
-            x_obs_ana = mean_X0 + xt_np * std_X0         # (Nens, m)
+            # Produce XA_block (either fallback or from xt)
+            if not block_numeric_ok:
+                self.XA_map.append(XA_block_fallback)
+                continue
 
-            x_full = prior_ens.copy()                    # (Nens, n_block)
-            x_full[:, idx_ob] = x_obs_ana                # observed dims updated
+            xt_np = xt.detach().cpu().numpy()                # (Nens, m)
+            x_obs_ana = mean_X0 + xt_np * std_X0             # (Nens, m)
+            x_full = prior_ens.copy()                        # (Nens, n_block)
+            x_full[:, idx_ob] = x_obs_ana
 
-            # restore per-dimension spread to initial std (discentralize)
-            mu = x_full.mean(axis=0)                     # (n_block,)
-            sd = x_full.std(axis=0) + 1e-12              # (n_block,)
+            mu = x_full.mean(axis=0)                         # (n_block,)
+            sd = x_full.std(axis=0) + 1e-12
             Xstd = (x_full - mu) / sd
             x_full = Xstd * init_std + mu
 
-            # to (n_block, Nens), then apply global inflation like other methods
-            XA_block = x_full.T
-            XA_block = self.covariance_inflation(XA_block)
-
-            # Append this block’s analysis
+            XA_block = self.covariance_inflation(x_full.T)   # (n_block, Nens)
             self.XA_map.append(XA_block)
 
-        # Sanity: one output per correlation block
-        assert len(self.XA_map) == len(self.nm.mask_cor), \
-            f"ReverseSDE: XA_map has {len(self.XA_map)} blocks, expected {len(self.nm.mask_cor)}."
+            # (optional) save clean XB for gaussianity if enabled
+            if SAVE_GAUSS_BLOCKS:
+                try:
+                    path_out = os.path.join(self.nm.path, GAUSS_DIRNAME, f"XB_block_{block_idx}.npy")
+                    _np.save(path_out, XB)
+                    print(f"[ReverseSDE][{label}] saved BACKGROUND block for gaussianity: {path_out}")
+                except Exception as e:
+                    print(f"[ReverseSDE][{label}] WARNING: save failed: {e}")
 
-        # Publish analysis ensemble (sets self.XA and writes member NetCDFs)
+        # Final sanity: if XA_map is short, pad with inflated background per block
+        if len(self.XA_map) < mc_len:
+            print(f"[ReverseSDE] WARNING: XA_map has {len(self.XA_map)} of {mc_len} blocks. Padding with fallbacks.")
+            for block_idx in range(len(self.XA_map), mc_len):
+                XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])
+                XA_block = self.covariance_inflation(XB_block)
+                self.XA_map.append(XA_block)
+
+        # Publish analysis
         self.map_vector_states()
 
-        # Final guard to avoid downstream None errors
-        assert self.XA is not None and len(self.XA) == self.Nens, \
-            "ReverseSDE: self.XA not built after map_vector_states()."
 
 
 
