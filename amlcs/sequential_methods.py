@@ -552,7 +552,7 @@ class ReverseSDE(ensemble_DA):
 
         # -------- CONFIG --------
         DEBUG_EVERY = 20
-        SAVE_GAUSS_BLOCKS = True
+        SAVE_GAUSS_BLOCKS = False
         GAUSS_DIRNAME = "gauss_checks"
         # ------------------------
 
