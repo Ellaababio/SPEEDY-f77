@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=ENSF_PLOT
-#SBATCH --output=ENSF_PLOT_%j.out
-#SBATCH --error=ENSF_PLOT_%j.err
+#SBATCH --job-name=error_obs_run_plots
+#SBATCH --output=error_obs_run_plots_%j.out
+#SBATCH --error=error_obs_run_plots_%j.err
 #SBATCH --account=chipilskigroup_q
 #SBATCH --partition=chipilskigroup_q
 #SBATCH -t 00:30:00
@@ -18,6 +18,6 @@ conda activate speedy_da_env
 
 cd amlcs/
 
-srun python error_plots.py easy_ensf_error_plots.csv
+srun python error_plots.py error_obs_run_plots.csv
 
 echo "--- Plotting Job Finished ---"

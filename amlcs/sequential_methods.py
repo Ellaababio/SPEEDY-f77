@@ -552,7 +552,7 @@ class ReverseSDE(ensemble_DA):
 
         # -------- CONFIG --------
         DEBUG_EVERY = 20
-        SAVE_GAUSS_BLOCKS = True
+        SAVE_GAUSS_BLOCKS = False
         GAUSS_DIRNAME = "gauss_checks"
         # ------------------------
 
@@ -569,16 +569,6 @@ class ReverseSDE(ensemble_DA):
         tol = 1.0e-4
         sf = float(getattr(self, "scalefact", 1.0))
         eps_alpha = float(getattr(self, "eps_alpha", 0.05))
-
-        def _cond_alpha(tt): return 1.0 - (1.0 - eps_alpha) * tt
-        def _cond_sigma_sq(tt): return tt
-        def _f(tt):
-            a = 1.0 - (1.0 - eps_alpha) * tt
-            return -(1.0 - eps_alpha) / a
-        def _g(tt):
-            g2 = 1.0 - 2.0 * _f(tt) * _cond_sigma_sq(tt)
-            return float(_np.sqrt(max(0.0, g2)))
-        def _g_tau(tt): return 1.0 - tt
 
         # Helper: readable block label (like your current prints)
         def _block_label(block_idx):
@@ -610,7 +600,7 @@ class ReverseSDE(ensemble_DA):
         mc_len = len(self.nm.mask_cor)
 
         print(f"[ReverseSDE] preflight: XB_map={xb_len}, obs_map={om_len}, mask_cor={mc_len}")
-
+        '''
         # One-time dump of block_map.json (only if maps are present and we haven't dumped yet)
         if xb_len > 0 and not getattr(self, "_block_map_dumped", False):
             try:
@@ -635,7 +625,7 @@ class ReverseSDE(ensemble_DA):
                 print(f"[ReverseSDE] WARNING: failed to write block_map.json: {e}")
             finally:
                 self._block_map_dumped = True  # never attempt again this process
-
+        '''
         self.XA_map = []
 
         # AUTO-FALLBACK if XB_map missing (no background prepared)
@@ -715,30 +705,52 @@ class ReverseSDE(ensemble_DA):
 
             block_numeric_ok = True
 
-            for i in range(psteps):
-                alpha_t = _cond_alpha(t)
-                sigma2_t = _cond_sigma_sq(t)
-                g = _g(t)
-                f = _f(t)
-                tau = _g_tau(t)
+            for i in range(1, psteps+1):
+                if i == 1:  # only print once per block
+                    try:
+                        std_val   = std_X0.mean().item()
+                        sigma_val = sigma.mean().item()
+                        sigma_n_val = sigma_n.mean().item()
+                        print(f"[ReverseSDE][{label}] init stats: "
+                            f"ensemble std={std_val:.3e}, obs err σ={sigma_val:.3e}, normalized σ_n={sigma_n_val:.3e}")
+                    except Exception as e:
+                        print(f"[ReverseSDE][{label}] could not compute init stats: {e}")
+                alpha_t = self._cond_alpha(t)
+                sigma2_t  = self._cond_sigma_sq(t)
+                f       = self._f(t)
+                g       = self._g(t)
+                tau     = self._g_tau(t)
 
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
-                like_score = -(sf * xt - y_n_t) / (sigma_n_t ** 2) * sf
+                like_score  = -((sf * xt) - y_n_t) / (_torch.clamp(sigma_n_t, min=1e-12) ** 2) * sf  # no tempering
 
-                if DEBUG_EVERY > 0 and (i % DEBUG_EVERY == 0):
+                # tempered likelihood score that actually enters the drift
+                like_tau = tau * like_score
+
+                # likelihood contribution to the drift magnitude (ignore the separate prior pull):
+                # drift = -( f*xt + g^2 * (prior_term - like_tau) )
+                # so the likelihood "pull" part is  + g^2 * like_tau
+                pull = (g ** 2) * like_tau
+
+                if  DEBUG_EVERY > 0 and (i % DEBUG_EVERY == 0 or i == 1):
                     with _torch.no_grad():
-                        abs_ls = _torch.abs(like_score)
-                        mask = _torch.isfinite(abs_ls)
-                        if mask.any():
-                            print(f"[ReverseSDE][{label}] step={i:03d} |like| mean={abs_ls[mask].mean().item():.4e} max={abs_ls[mask].max().item():.4e}")
-                        else:
-                            print(f"[ReverseSDE][{label}] step={i:03d} |like| all non-finite")
+                        abs_base = _torch.abs(like_score)
+                        abs_tau  = _torch.abs(like_tau)
+                        abs_pull = _torch.abs(pull)
 
-                # numeric guards
-                if (not _torch.isfinite(like_score).all()) or (not _torch.isfinite(prior_term).all()):
-                    print(f"[ReverseSDE][{label}] Non-finite score at step {i}. Using fallback for this block.")
-                    block_numeric_ok = False
-                    break
+                        # finite mask
+                        m = _torch.isfinite(abs_pull) & _torch.isfinite(abs_tau) & _torch.isfinite(abs_base)
+                        if m.any():
+                            print(
+                                f"[ReverseSDE][{label}] step={i:03d} "
+                                f"|like_score| mean={abs_base[m].mean().item():.4e} max={abs_base[m].max().item():.4e}  "
+                                f"|like_tau| mean={abs_tau[m].mean().item():.4e} max={abs_tau[m].max().item():.4e}  "
+                                #f"|pull| mean={abs_pull[m].mean().item():.4e} max={abs_pull[m].max().item():.4e}  "
+                                #f"tau={tau:.3f} g={g:.3e}"
+                            )
+                        else:
+                            print(f"[ReverseSDE][{label}] step={i:03d} diagnostics non-finite")
+                # --- end diagnostics ---
 
                 drift = - (f * xt + (g ** 2) * (prior_term - tau * like_score))
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
@@ -748,7 +760,7 @@ class ReverseSDE(ensemble_DA):
                     print(f"[ReverseSDE][{label}] State became non-finite at step {i}. Using fallback for this block.")
                     block_numeric_ok = False
                     break
-
+                '''
                 # early stop heuristic
                 if i > 0.5 * psteps:
                     mu = xt_next.mean(dim=0)
@@ -762,10 +774,9 @@ class ReverseSDE(ensemble_DA):
                 if i > 0.9 * psteps:
                     xt = xt_next
                     break
-
+                '''
                 xt = xt_next
                 t = max(0.0, t - dt)
-
             # Produce XA_block (either fallback or from xt)
             if not block_numeric_ok:
                 self.XA_map.append(XA_block_fallback)
