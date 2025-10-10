@@ -7,6 +7,49 @@ import time
 from netCDF4 import Dataset
 from commons_utils import compute_modified_Cholesky_decomposition
 import torch
+from netCDF4 import Dataset as NC
+# ===== BEGIN: generic grid dump helpers =====
+
+
+import os
+import numpy as np
+import pandas as pd
+from netCDF4 import Dataset as NC
+
+VAR_ORDER = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1']
+
+def _extract_grid_from_mean_state(mean_state, var_name, level):
+    """Return a 2D (nlat, nlon) array slice from a model mean_state structure."""
+    vi = VAR_ORDER.index(var_name)
+    arr = mean_state[vi]
+    # TRG may have a tracer dim (1, lev, nlat, nlon)
+    if var_name.startswith("TRG") and arr.ndim == 4:
+        arr = arr[0, ...]
+    # PSG is 2D (nlat, nlon)
+    if var_name.startswith("PSG"):
+        return np.asarray(arr, dtype=float)
+    return np.asarray(arr[level, :, :], dtype=float)
+
+def write_grid_values_csv(var_name, level, grid_bkg, grid_ana, grid_truth,
+                          grid_noda=None, out_csv_path=None):
+    """
+    Write raw grid values to a CSV with flattened columns.
+    Columns (NoDA available):  <var>_bkg_lev<k>, <var>_ana_lev<k>, <var>_truth_lev<k>, <var>_noda_lev<k>
+    Columns (NoDA missing):   <var>_bkg_lev<k>, <var>_ana_lev<k>, <var>_truth_lev<k>
+    """
+    cols = {
+        f"{var_name}_bkg_lev{level}":   grid_bkg.ravel(),
+        f"{var_name}_ana_lev{level}":   grid_ana.ravel(),
+        f"{var_name}_truth_lev{level}": grid_truth.ravel(),
+    }
+    if grid_noda is not None:
+        cols[f"{var_name}_noda_lev{level}"] = grid_noda.ravel()
+
+    df = pd.DataFrame(cols)
+    if out_csv_path is None:
+        out_csv_path = f"{var_name}_lev{level}_values.csv"
+    df.to_csv(out_csv_path, index=False)
+    return out_csv_path
 
 
 ##########################################################################################
@@ -428,11 +471,13 @@ class ReverseSDE(ensemble_DA):
         self.eps_alpha = float(eps_alpha)
         self.scalefact = float(scalefact)
         self.rng = np.random.RandomState(int(rng_seed))
-
+        self._cycle_idx = 0  # incremented once per perform_assimilation() call
         # Per-block working storage
         self.XB_map = []      # background info (like other methods)
         self.obs_map = []     # per-block obs mappings prepared in prepare_analysis
         self.XA_map = None
+    # ===== BEGIN: generic grid dump helpers =====
+
 
     # ===== Reverse-SDE schedule pieces (mirrors the original formulation) =====
     def _cond_alpha(self, t):
@@ -551,6 +596,7 @@ class ReverseSDE(ensemble_DA):
         import torch as _torch
 
         # -------- CONFIG --------
+        self._cycle_idx = getattr(self, "_cycle_idx", 0) + 1
         DEBUG_EVERY = 20
         SAVE_GAUSS_BLOCKS = False
         GAUSS_DIRNAME = "gauss_checks"
@@ -722,7 +768,7 @@ class ReverseSDE(ensemble_DA):
                 tau     = self._g_tau(t)
 
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
-                like_score  = -((sf * xt) - y_n_t) / (_torch.clamp(sigma_n_t, min=1e-12) ** 2) * sf  # no tempering
+                like_score  = -((sf * xt) - y_n_t) / (sigma_n_t ** 2) * sf  # no tempering
 
                 # tempered likelihood score that actually enters the drift
                 like_tau = tau * like_score
@@ -811,9 +857,58 @@ class ReverseSDE(ensemble_DA):
                 XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])
                 XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
+        # ---------- generic grid dump call (TG1 level 7 by default) ----------
+        # --- grid dump (safe version) ---
+        # --- grid dump (per-cycle) ---
+        # ---- write raw grid values for one var/level (e.g., TG1 @ lev 7) ----
+        k = getattr(self, "_cycle_idx", 0)  # per-cycle counter you added earlier
+        var_name = "TG1"
+        level    = 7  # surface
 
-        # Publish analysis
+        try:
+            k = getattr(self, "_cycle_idx", 0)  # your per-cycle counter
+
+            # Require both ensembles to exist
+            if getattr(self, "XB", None) is None or getattr(self, "XA", None) is None:
+                raise RuntimeError(f"XB or XA is None at cycle {k}; skipping grid dump.")
+
+            # Ensemble means from your model wrapper
+            xb_mean = self.nm.compute_snapshot_mean(self.XB)
+            xa_mean = self.nm.compute_snapshot_mean(self.XA)
+
+            var_name = "TG1"
+            level    = 7  # surface
+
+            grid_bkg = _extract_grid_from_mean_state(xb_mean, var_name, level)
+            grid_ana = _extract_grid_from_mean_state(xa_mean, var_name, level)
+
+            # Load truth for this cycle: snapshots/reference_solution_{k}.nc
+            truth_path = os.path.join(self.nm.path, "snapshots", f"reference_solution_{k}.nc")
+            with NC(truth_path, "r") as ds_ref:
+                arr = ds_ref[var_name][:]
+                if var_name.startswith("TRG") and arr.ndim == 4:
+                    arr = arr[0, ...]
+                grid_truth = (arr if var_name.startswith("PSG") else arr[level, :, :]).astype(float)
+
+            # Optional: load NoDA grid for this cycle: free_run/free_run_{k}.nc
+            grid_noda = None
+            noda_path = os.path.join(self.nm.path, "free_run", f"free_run_{k}.nc")
+            if os.path.exists(noda_path):
+                with NC(noda_path, "r") as ds_noda:
+                    arr = ds_noda[var_name][:]
+                    if var_name.startswith("TRG") and arr.ndim == 4:
+                        arr = arr[0, ...]
+                    grid_noda = (arr if var_name.startswith("PSG") else arr[level, :, :]).astype(float)
+
+            out_dir = getattr(self.nm, "path", ".")
+            out_csv = os.path.join(out_dir, f"{var_name}_lev{level}_values_cycle{k}.csv")
+            write_grid_values_csv(var_name, level, grid_bkg, grid_ana, grid_truth, grid_noda, out_csv)
+        except Exception as e:
+            print(f"[grid-values] {var_name}@lev{level} cycle={locals().get('k','?')} skipped: {e}")
+# --------------------------------------------------------------------
+
         self.map_vector_states()
+
 
 
 
