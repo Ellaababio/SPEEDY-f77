@@ -10,13 +10,8 @@ import torch
 from netCDF4 import Dataset as NC
 # ===== BEGIN: generic grid dump helpers =====
 
-
-import os
-import numpy as np
-import pandas as pd
-from netCDF4 import Dataset as NC
-
 VAR_ORDER = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1']
+_OBS_DUMP = [("TG0", 7)]  # e.g., [("TG0", 7), ("TG1", 7), ("UG0", 3)]
 
 def _extract_grid_from_mean_state(mean_state, var_name, level):
     """Return a 2D (nlat, nlon) array slice from a model mean_state structure."""
@@ -460,6 +455,101 @@ class LEnKF(ensemble_DA):
 ##########################################################################################
 ##########################################################################################
 class ReverseSDE(ensemble_DA):
+    # ======== Add inside class ReverseSDE ========
+
+    # Configure which fields to dump per cycle:
+    _OBS_DUMP = [("TG0", 7)]  # e.g., [("TG0", 7), ("TG1", 7), ("UG0", 3)]
+
+    def _var_index(self, name: str) -> int:
+        return list(self.nm.var_names).index(name)
+
+    def _find_block_and_slice(self, var_index: int, level: int):
+        """
+        Return (block_idx, start, end, lat, lon) for the (var, level) inside the
+        block vectorization defined by nm.mask_cor. Returns None if not found.
+        """
+        for b_idx, msk in enumerate(self.nm.mask_cor):
+            offset = 0
+            for (v_info, res) in msk:
+                vi, lev = v_info             # variable index, level
+                lat, lon = res               # grid shape for this var/level
+                n = lat * lon
+                if vi == var_index and lev == level:
+                    return b_idx, offset, offset + n, lat, lon
+                offset += n
+        return None
+
+    def _dump_obs_grid_for(self, block_idx: int, start: int, end: int,
+                        lat: int, lon: int, cycle_k: int,
+                        var_name: str, level: int):
+        """
+        Uses block-local observed columns (idx_observed) and the y,sigma vectors
+        to produce a (lat,lon) CSV for the requested var/level.
+        """
+        import os
+        import numpy as np
+        import pandas as pd
+
+        OM = self.obs_map[block_idx]
+        idx = OM["idx_observed"]  # block-local col indices (one per obs row)
+        y   = OM["y"]             # (m,)
+        # sigma = OM["sigma"]     # if you want a parallel file for uncertainties
+
+        # pick only rows whose column lies in [start,end)
+        mask = (idx >= start) & (idx < end)
+        n_in_slice = int(mask.sum())
+
+        # map those cols to 0..(lat*lon-1)
+        col_in_slice = idx[mask] - start
+
+        # fill raster with NaNs then insert obs
+        field = np.full((lat * lon,), np.nan)
+        field[col_in_slice] = y[mask]
+
+        grid = field.reshape((lat, lon))
+
+        # path & filename
+        out_dir = os.path.join(self.nm.path)
+        os.makedirs(out_dir, exist_ok=True)
+        fn = os.path.join(out_dir, f"{var_name}_lev{level}_obs_cycle{cycle_k}.csv")
+
+        pd.DataFrame(grid).to_csv(fn, index=False)
+        total = lat * lon
+        print(f"[obs-csv] {var_name}@lev{level}: matched {n_in_slice}/{total} | wrote {fn}")
+
+    def _dump_requested_obs(self, cycle_k: int):
+        """
+        For each (var_name, level) in _OBS_DUMP:
+        1) find the block that contains it,
+        2) compute its block-local slice,
+        3) dump the CSV for that block/cycle.
+        """
+        for (vname, lev) in _OBS_DUMP:
+            try:
+                v_idx = self._var_index(vname)
+            except ValueError:
+                print(f"[obs-csv] WARNING: var {vname} not found in nm.var_names")
+                continue
+
+            info = self._find_block_and_slice(v_idx, lev)
+            if info is None:
+                print(f"[obs-csv] WARNING: ({vname}, lev={lev}) not present in any block")
+                continue
+
+            b_idx, start, end, lat, lon = info
+
+            # Ensure we have obs for that block; build a friendly debug line
+            if b_idx >= len(self.obs_map) or "idx_observed" not in self.obs_map[b_idx]:
+                print(f"[obs-csv] WARNING: no obs_map for block {b_idx} ({vname}@lev{lev})")
+                continue
+
+            # Optional debug like your existing output
+            idx = self.obs_map[b_idx]["idx_observed"]
+            if idx.size:
+                print(f"[debug] block {b_idx} idx range: {int(idx.min())}–{int(idx.max())} ({idx.size} obs)")
+
+            self._dump_obs_grid_for(b_idx, start, end, lat, lon, cycle_k, vname, lev)
+    # ======== End additions ========
 
     def __init__(self, nm, infla, Nens,
                  pseudo_time_steps: int = 200,
@@ -579,7 +669,104 @@ class ReverseSDE(ensemble_DA):
                 "y": y_block.astype(float),
                 "sigma": sigma.astype(float),
             })
+            # --- debug: inspect first obs_map block
+            if self.obs_map:
+                first_blk = self.obs_map[0]
+                print(f"[debug] first obs_map block idx range: {first_blk['idx_observed'].min()}–{first_blk['idx_observed'].max()} "
+                    f"({len(first_blk['idx_observed'])} obs)")
 
+
+            # choose which (var, level) to dump as obs-on-grid
+            _OBS_DUMP = [("TG1", 7)]
+
+            # use the model's declared order + resolutions
+            _var_names = list(self.nm.var_names)      # e.g., ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1']
+            _var_resol = list(self.nm.var_resol)      # list indexed like _var_names
+            def _slice_bounds(var_name, level, var_names, var_resol):
+                """
+                Return (start, end, nlat, nlon) for (var_name, level) in the 1-D global state.
+                var_resol[idx] should be ((nlat, nlon), nlev) following numerical_model.py.
+                """
+                # map name -> index
+                try:
+                    target_idx = var_names.index(var_name)
+                except ValueError:
+                    raise ValueError(f"Unknown var_name {var_name}; not found in var_names.")
+
+                offset = 0
+                for i, vname in enumerate(var_names):
+                    (nlat, nlon), nlev = var_resol[i]
+                    plane = nlat * nlon
+
+                    # number of elements for this variable in the global state
+                    if vname.startswith("PSG"):
+                        var_size = plane          # 2D surface field
+                    else:
+                        var_size = plane * nlev   # 3D (levels)
+
+                    if i == target_idx:
+                        lvl = 0 if vname.startswith("PSG") else int(level)
+                        if not vname.startswith("PSG") and not (0 <= lvl < nlev):
+                            raise ValueError(f"level {level} out of bounds for {var_name} (nlev={nlev})")
+                        start = offset + lvl * plane
+                        end   = start + plane
+                        return start, end, nlat, nlon
+
+                    offset += var_size
+
+                raise RuntimeError("Slice bounds computation fell through unexpectedly.")
+
+            def _grid_from_obsmap(var_name, level, obs_map, var_names, var_resol, return_sigma=False):
+                """
+                Build 2-D obs grid (and optional sigma grid) for (var_name, level) using self.obs_map.
+                Unobserved points are NaN.
+                """
+                vstart, vend, nlat, nlon = _slice_bounds(var_name, level, var_names, var_resol)
+                G = np.full((nlat, nlon), np.nan, dtype=float)
+                S = np.full((nlat, nlon), np.nan, dtype=float) if return_sigma else None
+
+                for blk in obs_map:
+                    idx = blk['idx_observed']  # global state indices (aligned with H rows)
+                    y   = blk['y']
+                    m = (idx >= vstart) & (idx < vend)
+                    if not np.any(m):
+                        continue
+                    loc = idx[m] - vstart
+                    ii, jj = loc // nlon, loc % nlon
+                    G[ii, jj] = y[m]
+                    if return_sigma and ('sigma' in blk):
+                        S[ii, jj] = blk['sigma'][m]
+
+                return (G, S) if return_sigma else G
+
+            try:
+                out_dir = getattr(self.nm, "path", ".")
+                os.makedirs(out_dir, exist_ok=True)
+
+                for (vname, lvl) in _OBS_DUMP:
+                    grid_obs, grid_sig = _grid_from_obsmap(
+                        vname, lvl, self.obs_map, _var_names, _var_resol, return_sigma=True
+                    )
+                    n_obs = int(np.isfinite(grid_obs).sum())
+                    n_all = int(grid_obs.size)
+                    tag = "full-field" if n_obs == n_all else f"partial {n_obs}/{n_all}"
+                    print(f"[obs-csv] {vname}@lev{lvl}: {tag}")
+
+                    cols = {
+                        f"{vname}_obs_lev{lvl}":   grid_obs.ravel(),
+                    }
+                    if grid_sig is not None:
+                        cols[f"{vname}_sigma_lev{lvl}"] = grid_sig.ravel()
+
+                    df = pd.DataFrame(cols)
+                    out_csv = os.path.join(out_dir, f"{vname}_lev{lvl}_obs_cycle{k}.csv")
+                    df.to_csv(out_csv, index=False)
+                    print(f"[obs-csv] wrote {out_csv}")
+
+            except Exception as e:
+                print(f"[obs-csv] write failed: {e}")
+            # ---- END: per-cycle obs -> grid CSV ----
+            self._dump_requested_obs(cycle_k=k)
     # ====== ensemble_DA hooks ======
     def perform_assimilation(self, ob):
         """
@@ -862,7 +1049,7 @@ class ReverseSDE(ensemble_DA):
         # --- grid dump (per-cycle) ---
         # ---- write raw grid values for one var/level (e.g., TG1 @ lev 7) ----
         k = getattr(self, "_cycle_idx", 0)  # per-cycle counter you added earlier
-        var_name = "TG1"
+        var_name = "TG0"
         level    = 7  # surface
 
         try:
@@ -876,7 +1063,7 @@ class ReverseSDE(ensemble_DA):
             xb_mean = self.nm.compute_snapshot_mean(self.XB)
             xa_mean = self.nm.compute_snapshot_mean(self.XA)
 
-            var_name = "TG1"
+            var_name = "TG0"
             level    = 7  # surface
 
             grid_bkg = _extract_grid_from_mean_state(xb_mean, var_name, level)
