@@ -8,43 +8,6 @@ from netCDF4 import Dataset
 from commons_utils import compute_modified_Cholesky_decomposition
 import torch
 from netCDF4 import Dataset as NC
-# ===== BEGIN: generic grid dump helpers =====
-
-VAR_ORDER = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1']
-_OBS_DUMP = [("TG0", 7)]  # e.g., [("TG0", 7), ("TG1", 7), ("UG0", 3)]
-
-def _extract_grid_from_mean_state(mean_state, var_name, level):
-    """Return a 2D (nlat, nlon) array slice from a model mean_state structure."""
-    vi = VAR_ORDER.index(var_name)
-    arr = mean_state[vi]
-    # TRG may have a tracer dim (1, lev, nlat, nlon)
-    if var_name.startswith("TRG") and arr.ndim == 4:
-        arr = arr[0, ...]
-    # PSG is 2D (nlat, nlon)
-    if var_name.startswith("PSG"):
-        return np.asarray(arr, dtype=float)
-    return np.asarray(arr[level, :, :], dtype=float)
-
-def write_grid_values_csv(var_name, level, grid_bkg, grid_ana, grid_truth,
-                          grid_noda=None, out_csv_path=None):
-    """
-    Write raw grid values to a CSV with flattened columns.
-    Columns (NoDA available):  <var>_bkg_lev<k>, <var>_ana_lev<k>, <var>_truth_lev<k>, <var>_noda_lev<k>
-    Columns (NoDA missing):   <var>_bkg_lev<k>, <var>_ana_lev<k>, <var>_truth_lev<k>
-    """
-    cols = {
-        f"{var_name}_bkg_lev{level}":   grid_bkg.ravel(),
-        f"{var_name}_ana_lev{level}":   grid_ana.ravel(),
-        f"{var_name}_truth_lev{level}": grid_truth.ravel(),
-    }
-    if grid_noda is not None:
-        cols[f"{var_name}_noda_lev{level}"] = grid_noda.ravel()
-
-    df = pd.DataFrame(cols)
-    if out_csv_path is None:
-        out_csv_path = f"{var_name}_lev{level}_values.csv"
-    df.to_csv(out_csv_path, index=False)
-    return out_csv_path
 
 
 ##########################################################################################
@@ -455,101 +418,6 @@ class LEnKF(ensemble_DA):
 ##########################################################################################
 ##########################################################################################
 class ReverseSDE(ensemble_DA):
-    # ======== Add inside class ReverseSDE ========
-
-    # Configure which fields to dump per cycle:
-    _OBS_DUMP = [("TG0", 7)]  # e.g., [("TG0", 7), ("TG1", 7), ("UG0", 3)]
-
-    def _var_index(self, name: str) -> int:
-        return list(self.nm.var_names).index(name)
-
-    def _find_block_and_slice(self, var_index: int, level: int):
-        """
-        Return (block_idx, start, end, lat, lon) for the (var, level) inside the
-        block vectorization defined by nm.mask_cor. Returns None if not found.
-        """
-        for b_idx, msk in enumerate(self.nm.mask_cor):
-            offset = 0
-            for (v_info, res) in msk:
-                vi, lev = v_info             # variable index, level
-                lat, lon = res               # grid shape for this var/level
-                n = lat * lon
-                if vi == var_index and lev == level:
-                    return b_idx, offset, offset + n, lat, lon
-                offset += n
-        return None
-
-    def _dump_obs_grid_for(self, block_idx: int, start: int, end: int,
-                        lat: int, lon: int, cycle_k: int,
-                        var_name: str, level: int):
-        """
-        Uses block-local observed columns (idx_observed) and the y,sigma vectors
-        to produce a (lat,lon) CSV for the requested var/level.
-        """
-        import os
-        import numpy as np
-        import pandas as pd
-
-        OM = self.obs_map[block_idx]
-        idx = OM["idx_observed"]  # block-local col indices (one per obs row)
-        y   = OM["y"]             # (m,)
-        # sigma = OM["sigma"]     # if you want a parallel file for uncertainties
-
-        # pick only rows whose column lies in [start,end)
-        mask = (idx >= start) & (idx < end)
-        n_in_slice = int(mask.sum())
-
-        # map those cols to 0..(lat*lon-1)
-        col_in_slice = idx[mask] - start
-
-        # fill raster with NaNs then insert obs
-        field = np.full((lat * lon,), np.nan)
-        field[col_in_slice] = y[mask]
-
-        grid = field.reshape((lat, lon))
-
-        # path & filename
-        out_dir = os.path.join(self.nm.path)
-        os.makedirs(out_dir, exist_ok=True)
-        fn = os.path.join(out_dir, f"{var_name}_lev{level}_obs_cycle{cycle_k}.csv")
-
-        pd.DataFrame(grid).to_csv(fn, index=False)
-        total = lat * lon
-        print(f"[obs-csv] {var_name}@lev{level}: matched {n_in_slice}/{total} | wrote {fn}")
-
-    def _dump_requested_obs(self, cycle_k: int):
-        """
-        For each (var_name, level) in _OBS_DUMP:
-        1) find the block that contains it,
-        2) compute its block-local slice,
-        3) dump the CSV for that block/cycle.
-        """
-        for (vname, lev) in _OBS_DUMP:
-            try:
-                v_idx = self._var_index(vname)
-            except ValueError:
-                print(f"[obs-csv] WARNING: var {vname} not found in nm.var_names")
-                continue
-
-            info = self._find_block_and_slice(v_idx, lev)
-            if info is None:
-                print(f"[obs-csv] WARNING: ({vname}, lev={lev}) not present in any block")
-                continue
-
-            b_idx, start, end, lat, lon = info
-
-            # Ensure we have obs for that block; build a friendly debug line
-            if b_idx >= len(self.obs_map) or "idx_observed" not in self.obs_map[b_idx]:
-                print(f"[obs-csv] WARNING: no obs_map for block {b_idx} ({vname}@lev{lev})")
-                continue
-
-            # Optional debug like your existing output
-            idx = self.obs_map[b_idx]["idx_observed"]
-            if idx.size:
-                print(f"[debug] block {b_idx} idx range: {int(idx.min())}–{int(idx.max())} ({idx.size} obs)")
-
-            self._dump_obs_grid_for(b_idx, start, end, lat, lon, cycle_k, vname, lev)
-    # ======== End additions ========
 
     def __init__(self, nm, infla, Nens,
                  pseudo_time_steps: int = 200,
@@ -567,6 +435,145 @@ class ReverseSDE(ensemble_DA):
         self.obs_map = []     # per-block obs mappings prepared in prepare_analysis
         self.XA_map = None
     # ===== BEGIN: generic grid dump helpers =====
+    # ---- Unified CSV config: which (var,level) to dump per cycle ----
+    # --- Which (var,level) to dump per cycle ---
+    _UNIFIED_DUMP = [("TG0", 7)]  # add more tuples as needed
+
+    def _var_index(self, name: str) -> int:
+        return list(self.nm.var_names).index(name)
+
+    def _find_block_and_slice(self, var_index: int, level: int):
+        """
+        Return (block_idx, start, end, lat, lon) for (var, level) within the
+        block vectorization defined by nm.mask_cor. None if not found.
+        """
+        for b_idx, msk in enumerate(self.nm.mask_cor):
+            offset = 0
+            for (v_info, res) in msk:
+                vi, lev = v_info
+                lat, lon = res
+                n = lat * lon
+                if vi == var_index and lev == level:
+                    return b_idx, offset, offset + n, lat, lon
+                offset += n
+        return None
+
+    def _load_state_flat_from_nc(self, nc_file: str, var_index: int, level: int):
+        """
+        Load a single (var,level) field from a NetCDF file and return as flat (lat*lon,).
+        Uses the repo's own loader to keep var naming consistent.
+        """
+        import numpy as np
+        try:
+            xs = self.nm.load_netcdf_file(nc_file)  # list of arrays in var_names order
+        except Exception as e:
+            print(f"[unified-csv] WARNING: failed to load {nc_file}: {e}")
+            return None
+
+        arr = xs[var_index]
+        vname = self.nm.var_names[var_index]
+        # TRG may have tracer dim (1, lev, lat, lon)
+        if "TRG" in vname and arr.ndim == 4:
+            arr = arr[0, ...]
+        # PSG is 2D (lat, lon); others are (lev, lat, lon)
+        if "PSG" in vname:
+            fld = arr
+        else:
+            fld = arr[level, :, :]
+        return np.asarray(fld, dtype=float).ravel()
+
+    def _dump_unified_flat(self, cycle_k: int):
+        """
+        ONE flattened CSV per (var,level) in _UNIFIED_DUMP, with columns:
+        idx, xb_mean, xa_mean, truth, noda, obs, sigma, is_obs
+        Notes:
+        - xb_mean, xa_mean from ensemble means in the proper block slice.
+        - truth from snapshots/reference_solution_{k}.nc
+        - noda  from free_run/free_run_{k}.nc
+        - obs/sigma/is_obs from self.obs_map (block-local columns).
+        """
+        import os
+        import numpy as np
+        import pandas as pd
+
+        # file templates for truth / noda at cycle k
+        ref_nc  = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
+        noda_nc = os.path.join(self.nm.free_run,   f"free_run_{cycle_k}.nc")
+        _UNIFIED_DUMP = [("TG0", 7)]  # add more tuples as needed
+        for vname, lev in _UNIFIED_DUMP:
+            # locate field within blocks
+            try:
+                v_idx = self._var_index(vname)
+            except ValueError:
+                print(f"[unified-csv] WARNING: var {vname} not found in nm.var_names")
+                continue
+
+            info = self._find_block_and_slice(v_idx, lev)
+            if info is None:
+                print(f"[unified-csv] WARNING: ({vname}, lev={lev}) not present in any block")
+                continue
+
+            b_idx, start, end, lat, lon = info
+            n = end - start
+
+            # ensure background exists
+            if b_idx >= len(self.XB_map) or "XB_b" not in self.XB_map[b_idx]:
+                print(f"[unified-csv] WARNING: missing XB for block {b_idx} ({vname}@{lev})")
+                continue
+
+            # background mean (xb)
+            XB_block = self.XB_map[b_idx]["XB_b"]      # (n_block, Nens)
+            xb_slice = XB_block[start:end, :]          # (n, Nens)
+            xb_mean  = xb_slice.mean(axis=1)           # (n,)
+
+            # analysis mean (xa) -- available after perform_assimilation
+            if self.XA_map is not None and b_idx < len(self.XA_map):
+                XA_block = self.XA_map[b_idx]          # (n_block, Nens)
+                xa_slice = XA_block[start:end, :]      # (n, Nens)
+                xa_mean  = xa_slice.mean(axis=1)       # (n,)
+            else:
+                xa_mean  = np.full((n,), np.nan)
+
+            # observations (block-local indices)
+            obs   = np.full((n,), np.nan)
+            sigma = np.full((n,), np.nan)
+            is_obs = np.zeros((n,), dtype=int)
+            if b_idx < len(self.obs_map):
+                om = self.obs_map[b_idx]
+                idx_cols = om.get("idx_observed", None)
+                y_vals   = om.get("y", None)
+                sg_vals  = om.get("sigma", None)  # <-- observation std (obs error)
+                if idx_cols is not None and y_vals is not None and sg_vals is not None and idx_cols.size > 0:
+                    mask = (idx_cols >= start) & (idx_cols < end)
+                    if mask.any():
+                        local = idx_cols[mask] - start
+                        obs[local]   = y_vals[mask]
+                        sigma[local] = sg_vals[mask]
+                        is_obs[local] = 1
+
+            # truth and NoDA from saved NetCDFs (best-effort)
+            truth = self._load_state_flat_from_nc(ref_nc,  v_idx, lev)
+            noda  = self._load_state_flat_from_nc(noda_nc, v_idx, lev)
+            if truth is None: truth = np.full((n,), np.nan)
+            if noda  is None: noda  = np.full((n,), np.nan)
+
+            # assemble table
+            df = pd.DataFrame({
+                "idx":     np.arange(n, dtype=int),
+                "xb_mean": xb_mean.astype(float),
+                "xa_mean": xa_mean.astype(float),
+                "truth":   np.asarray(truth, dtype=float),
+                "noda":    np.asarray(noda,  dtype=float),
+                "obs":     obs.astype(float),
+                "sigma":   sigma.astype(float),  # obs std from R diagonal
+                "is_obs":  is_obs.astype(int),
+            })
+
+            out_dir = os.path.join(self.nm.path)
+            os.makedirs(out_dir, exist_ok=True)
+            fn = os.path.join(out_dir, f"{vname}_lev{lev}_cycle{cycle_k}.csv")
+            df.to_csv(fn, index=False)
+            print(f"[unified-csv] {vname}@lev{lev}: wrote {fn} | N={n} obs={int(is_obs.sum())}")
 
 
     # ===== Reverse-SDE schedule pieces (mirrors the original formulation) =====
@@ -622,6 +629,7 @@ class ReverseSDE(ensemble_DA):
         import scipy.sparse as _spa
 
         self.obs_map = []
+        self.current_cycle_k = int(k)  # remember k for file names
 
         for block, XB_info in enumerate(self.XB_map):
             # Sparse H (m x n)
@@ -675,98 +683,6 @@ class ReverseSDE(ensemble_DA):
                 print(f"[debug] first obs_map block idx range: {first_blk['idx_observed'].min()}–{first_blk['idx_observed'].max()} "
                     f"({len(first_blk['idx_observed'])} obs)")
 
-
-            # choose which (var, level) to dump as obs-on-grid
-            _OBS_DUMP = [("TG1", 7)]
-
-            # use the model's declared order + resolutions
-            _var_names = list(self.nm.var_names)      # e.g., ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1']
-            _var_resol = list(self.nm.var_resol)      # list indexed like _var_names
-            def _slice_bounds(var_name, level, var_names, var_resol):
-                """
-                Return (start, end, nlat, nlon) for (var_name, level) in the 1-D global state.
-                var_resol[idx] should be ((nlat, nlon), nlev) following numerical_model.py.
-                """
-                # map name -> index
-                try:
-                    target_idx = var_names.index(var_name)
-                except ValueError:
-                    raise ValueError(f"Unknown var_name {var_name}; not found in var_names.")
-
-                offset = 0
-                for i, vname in enumerate(var_names):
-                    (nlat, nlon), nlev = var_resol[i]
-                    plane = nlat * nlon
-
-                    # number of elements for this variable in the global state
-                    if vname.startswith("PSG"):
-                        var_size = plane          # 2D surface field
-                    else:
-                        var_size = plane * nlev   # 3D (levels)
-
-                    if i == target_idx:
-                        lvl = 0 if vname.startswith("PSG") else int(level)
-                        if not vname.startswith("PSG") and not (0 <= lvl < nlev):
-                            raise ValueError(f"level {level} out of bounds for {var_name} (nlev={nlev})")
-                        start = offset + lvl * plane
-                        end   = start + plane
-                        return start, end, nlat, nlon
-
-                    offset += var_size
-
-                raise RuntimeError("Slice bounds computation fell through unexpectedly.")
-
-            def _grid_from_obsmap(var_name, level, obs_map, var_names, var_resol, return_sigma=False):
-                """
-                Build 2-D obs grid (and optional sigma grid) for (var_name, level) using self.obs_map.
-                Unobserved points are NaN.
-                """
-                vstart, vend, nlat, nlon = _slice_bounds(var_name, level, var_names, var_resol)
-                G = np.full((nlat, nlon), np.nan, dtype=float)
-                S = np.full((nlat, nlon), np.nan, dtype=float) if return_sigma else None
-
-                for blk in obs_map:
-                    idx = blk['idx_observed']  # global state indices (aligned with H rows)
-                    y   = blk['y']
-                    m = (idx >= vstart) & (idx < vend)
-                    if not np.any(m):
-                        continue
-                    loc = idx[m] - vstart
-                    ii, jj = loc // nlon, loc % nlon
-                    G[ii, jj] = y[m]
-                    if return_sigma and ('sigma' in blk):
-                        S[ii, jj] = blk['sigma'][m]
-
-                return (G, S) if return_sigma else G
-
-            try:
-                out_dir = getattr(self.nm, "path", ".")
-                os.makedirs(out_dir, exist_ok=True)
-
-                for (vname, lvl) in _OBS_DUMP:
-                    grid_obs, grid_sig = _grid_from_obsmap(
-                        vname, lvl, self.obs_map, _var_names, _var_resol, return_sigma=True
-                    )
-                    n_obs = int(np.isfinite(grid_obs).sum())
-                    n_all = int(grid_obs.size)
-                    tag = "full-field" if n_obs == n_all else f"partial {n_obs}/{n_all}"
-                    print(f"[obs-csv] {vname}@lev{lvl}: {tag}")
-
-                    cols = {
-                        f"{vname}_obs_lev{lvl}":   grid_obs.ravel(),
-                    }
-                    if grid_sig is not None:
-                        cols[f"{vname}_sigma_lev{lvl}"] = grid_sig.ravel()
-
-                    df = pd.DataFrame(cols)
-                    out_csv = os.path.join(out_dir, f"{vname}_lev{lvl}_obs_cycle{k}.csv")
-                    df.to_csv(out_csv, index=False)
-                    print(f"[obs-csv] wrote {out_csv}")
-
-            except Exception as e:
-                print(f"[obs-csv] write failed: {e}")
-            # ---- END: per-cycle obs -> grid CSV ----
-            self._dump_requested_obs(cycle_k=k)
     # ====== ensemble_DA hooks ======
     def perform_assimilation(self, ob):
         """
@@ -1092,9 +1008,10 @@ class ReverseSDE(ensemble_DA):
             write_grid_values_csv(var_name, level, grid_bkg, grid_ana, grid_truth, grid_noda, out_csv)
         except Exception as e:
             print(f"[grid-values] {var_name}@lev{level} cycle={locals().get('k','?')} skipped: {e}")
-# --------------------------------------------------------------------
 
         self.map_vector_states()
+        # >>> write one unified CSV per requested field, now that analysis exists
+        self._dump_unified_flat(cycle_k=getattr(self, "current_cycle_k", 0))
 
 
 
