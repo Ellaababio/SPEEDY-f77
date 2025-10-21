@@ -423,11 +423,13 @@ class ReverseSDE(ensemble_DA):
                  pseudo_time_steps: int = 200,
                  eps_alpha: float = 0.05,
                  scalefact: float = 1.0,
+                 eps_beta: float = 0.025,
                  rng_seed: int = 42):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
         self.eps_alpha = float(eps_alpha)
         self.scalefact = float(scalefact)
+        self.eps_beta = float(eps_beta)
         self.rng = np.random.RandomState(int(rng_seed))
         self._cycle_idx = 0  # incremented once per perform_assimilation() call
         # Per-block working storage
@@ -437,7 +439,7 @@ class ReverseSDE(ensemble_DA):
     # ===== BEGIN: generic grid dump helpers =====
     # ---- Unified CSV config: which (var,level) to dump per cycle ----
     # --- Which (var,level) to dump per cycle ---
-    _UNIFIED_DUMP = [("TG0", 7)]  # add more tuples as needed
+    _UNIFIED_DUMP = [("TG1", 7)]  # add more tuples as needed
 
     def _var_index(self, name: str) -> int:
         return list(self.nm.var_names).index(name)
@@ -499,7 +501,7 @@ class ReverseSDE(ensemble_DA):
         # file templates for truth / noda at cycle k
         ref_nc  = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
         noda_nc = os.path.join(self.nm.free_run,   f"free_run_{cycle_k}.nc")
-        _UNIFIED_DUMP = [("TG0", 7)]  # add more tuples as needed
+        _UNIFIED_DUMP = [("TG1", 7)]  # add more tuples as needed
         for vname, lev in _UNIFIED_DUMP:
             # locate field within blocks
             try:
@@ -583,7 +585,8 @@ class ReverseSDE(ensemble_DA):
 
     def _cond_sigma_sq(self, t):
         # sigma_t^2
-        return t
+        return self.eps_beta + (1.0 - self.eps_beta) * t
+
 
     def _f(self, t):
         # f = d(log alpha)/dt
@@ -591,10 +594,10 @@ class ReverseSDE(ensemble_DA):
         return -(1.0 - self.eps_alpha) / alpha_t
 
     def _g(self, t):
-        # g satisfies: d(sigma^2)/dt - 2 f sigma^2 = g^2
-        d_sigma_sq_dt = 1.0
+        # d(sigma^2)/dt - 2 f sigma^2 = g^2
+        d_sigma_sq_dt = (1.0 - self.eps_beta)        # derivative of the schedule above
         g2 = d_sigma_sq_dt - 2.0 * self._f(t) * self._cond_sigma_sq(t)
-        return np.sqrt(g2)
+        return np.sqrt(max(0.0, g2))
 
     def _g_tau(self, t):
         # likelihood tempering (tau) as in the original code
@@ -677,11 +680,22 @@ class ReverseSDE(ensemble_DA):
                 "y": y_block.astype(float),
                 "sigma": sigma.astype(float),
             })
-            # --- debug: inspect first obs_map block
-            if self.obs_map:
-                first_blk = self.obs_map[0]
-                print(f"[debug] first obs_map block idx range: {first_blk['idx_observed'].min()}–{first_blk['idx_observed'].max()} "
-                    f"({len(first_blk['idx_observed'])} obs)")
+        # --- inside prepare_analysis(), right before that debug print ---
+        # ensure idx_observed is an ndarray for all blocks
+        for b in self.obs_map:
+            if not isinstance(b.get('idx_observed', None), np.ndarray):
+                b['idx_observed'] = np.array([], dtype=int)
+
+        non_empty = next((b for b in self.obs_map if b['idx_observed'].size > 0), None)
+        if non_empty is not None:
+            i0 = int(non_empty['idx_observed'].min())
+            i1 = int(non_empty['idx_observed'].max())
+            print(f"[debug] first obs_map block idx range: {i0}–{i1} "
+                f"(m={non_empty['idx_observed'].size}, vars={non_empty.get('vars')})")
+        else:
+            raise RuntimeError("No observations selected after applying obs_plc—"
+                            "check obs_plc and time-level filters (TG0 vs TG1).")
+
 
     # ====== ensemble_DA hooks ======
     def perform_assimilation(self, ob):
@@ -704,6 +718,9 @@ class ReverseSDE(ensemble_DA):
         SAVE_GAUSS_BLOCKS = False
         GAUSS_DIRNAME = "gauss_checks"
         # ------------------------
+        OBS_INCLUDE = getattr(self, "obs_include_vars", None)
+        if OBS_INCLUDE is not None and not isinstance(OBS_INCLUDE, set):
+            OBS_INCLUDE = set(OBS_INCLUDE)
 
         # Ensure device / RNG
         if not hasattr(self, "device"):
@@ -735,6 +752,36 @@ class ReverseSDE(ensemble_DA):
             lev_str = f"lev={list(levels)[0]}" if len(levels) == 1 else "levs={" + ",".join(str(L) for L in sorted(levels)) + "}"
             vlist = ",".join(var_names[:5]) + ("..." if len(var_names) > 5 else "")
             return f"block={block_idx} [{lev_str}] vars={vlist}"
+                # >>> CHANGE B: helper to map each local index in a block to its var name
+                # >>> CHANGE B (REPLACE): build var-name array by offsets, not indices
+        def _block_varnames_array(block_idx, n_block):
+            """
+            Return an array of length n_block mapping each local state row j in this block
+            to its variable name (e.g., 'TG1', 'UG0', ...). The block is a concatenation
+            of slices listed in self.nm.mask_cor[block_idx], where each item is:
+                it[0] -> (v_idx, lev)
+                it[1] -> (lat, lon)
+            and each slice length is lat*lon.
+            """
+            import numpy as _np
+            vnames = _np.empty(n_block, dtype=object)
+            off = 0
+            try:
+                items = self.nm.mask_cor[block_idx]
+                for it in items:
+                    (v_idx, _lev) = it[0]
+                    lat, lon = it[1]  # (lat, lon), not an index array
+                    n = int(lat) * int(lon)
+                    vname = self.nm.var_names[v_idx]
+                    vnames[off:off+n] = vname
+                    off += n
+                if off != n_block:
+                    print(f"[ReverseSDE][block={block_idx}] WARNING: offset {off} != n_block {n_block}")
+            except Exception as e:
+                print(f"[ReverseSDE][block={block_idx}] WARNING: could not build var mapping: {e}")
+                return None
+            return vnames
+
 
         # Prepare output dir for gaussianity blocks (if enabled)
         if SAVE_GAUSS_BLOCKS:
@@ -812,18 +859,48 @@ class ReverseSDE(ensemble_DA):
             n_block, Nens = XB.shape
 
             # Get observation map (may be None)
+                        # Get observation map (may be None)
             OM = self.obs_map[block_idx] if block_idx < om_len else None
 
             # Default fallback: inflated background
             XA_block_fallback = self.covariance_inflation(XB)
 
-            # No obs case
-            if (OM is None) or ("idx_observed" not in OM) or (OM["idx_observed"] is None) or (OM["idx_observed"].size == 0):
+            # --- base "no obs" gate ---
+            if (OM is None) or ("idx_observed" not in OM) or (OM["idx_observed"] is None):
                 self.XA_map.append(XA_block_fallback)
                 continue
 
-            # Observed indices and vectors
             idx_ob = OM["idx_observed"]
+            if idx_ob.size == 0:
+                self.XA_map.append(XA_block_fallback)
+                continue
+
+            # >>> CHANGE C: if user requested a subset of variables/time-levels, filter idx_observed down
+            if OBS_INCLUDE is not None and len(OBS_INCLUDE) > 0:
+                varnames_in_block = _block_varnames_array(block_idx, n_block)
+                if varnames_in_block is not None:
+                    import numpy as _np
+                    keep_mask = _np.array([varnames_in_block[j] in OBS_INCLUDE for j in idx_ob], dtype=bool)
+                    if keep_mask.size != idx_ob.size:
+                        print(f"[ReverseSDE][{label}] WARNING: keep_mask size mismatch; skipping filter")
+                    else:
+                        if not keep_mask.any():
+                            # Entire block has no kept obs after filtering
+                            self.XA_map.append(XA_block_fallback)
+                            continue
+                        # filter all obs-space vectors consistently
+                        idx_ob = idx_ob[keep_mask]
+                        if "y" in OM and OM["y"] is not None:
+                            OM["y"] = OM["y"].reshape(-1)[keep_mask]
+                        if "sigma" in OM and OM["sigma"] is not None:
+                            OM["sigma"] = OM["sigma"].reshape(-1)[keep_mask]
+
+            # Re-check after filtering
+            if idx_ob.size == 0:
+                self.XA_map.append(XA_block_fallback)
+                continue
+
+            # Observed vectors (now filtered)
             y = OM["y"].reshape(-1)
             sigma = OM["sigma"].reshape(-1)
             m = idx_ob.size
@@ -837,8 +914,9 @@ class ReverseSDE(ensemble_DA):
             std_X0  = X0_obs.std(axis=0) + 1e-12          # (m,)
             X0_obs_n = (X0_obs - mean_X0) / std_X0        # (Nens, m)
 
-            y_n = ((y - sf * mean_X0) / std_X0).reshape(-1)       # (m,)
-            sigma_n = ((sigma / std_X0) * sf).reshape(-1)         # (m,)
+            # AFTER
+            y_n     = ((y -        mean_X0) / std_X0).reshape(-1)
+            sigma_n = ((sigma /    std_X0)           ).reshape(-1)
 
             # Torch tensors
             X0_obs_n_t = _torch.from_numpy(X0_obs_n).to(device=device, dtype=_torch.float32)
@@ -851,6 +929,15 @@ class ReverseSDE(ensemble_DA):
             t = 1.0
 
             print(f"[ReverseSDE][{label}] starting reverse-SDE (m={m}, Nens={Nens})")
+                        # >>> CHANGE D: tiny summary of which vars survived in this block
+            try:
+                vnames = _block_varnames_array(block_idx, n_block)
+                if vnames is not None:
+                    import numpy as _np
+                    kept = _np.unique(vnames[idx_ob])
+                    print(f"[ReverseSDE][{label}] kept vars: {list(kept)}  (m={m})")
+            except Exception:
+                pass
 
             block_numeric_ok = True
 
@@ -871,7 +958,7 @@ class ReverseSDE(ensemble_DA):
                 tau     = self._g_tau(t)
 
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
-                like_score  = -((sf * xt) - y_n_t) / (sigma_n_t ** 2) * sf  # no tempering
+                like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
 
                 # tempered likelihood score that actually enters the drift
                 like_tau = tau * like_score
@@ -901,7 +988,8 @@ class ReverseSDE(ensemble_DA):
                             print(f"[ReverseSDE][{label}] step={i:03d} diagnostics non-finite")
                 # --- end diagnostics ---
 
-                drift = - (f * xt + (g ** 2) * (prior_term - tau * like_score))
+                # AFTER (canonical form)
+                drift = -( f * xt + (g ** 2) * prior_term - like_tau )
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
 
@@ -909,7 +997,7 @@ class ReverseSDE(ensemble_DA):
                     print(f"[ReverseSDE][{label}] State became non-finite at step {i}. Using fallback for this block.")
                     block_numeric_ok = False
                     break
-                '''
+
                 # early stop heuristic
                 if i > 0.5 * psteps:
                     mu = xt_next.mean(dim=0)
@@ -923,7 +1011,7 @@ class ReverseSDE(ensemble_DA):
                 if i > 0.9 * psteps:
                     xt = xt_next
                     break
-                '''
+            
                 xt = xt_next
                 t = max(0.0, t - dt)
             # Produce XA_block (either fallback or from xt)
@@ -965,7 +1053,7 @@ class ReverseSDE(ensemble_DA):
         # --- grid dump (per-cycle) ---
         # ---- write raw grid values for one var/level (e.g., TG1 @ lev 7) ----
         k = getattr(self, "_cycle_idx", 0)  # per-cycle counter you added earlier
-        var_name = "TG0"
+        var_name = "TG1"
         level    = 7  # surface
 
         try:
@@ -979,11 +1067,8 @@ class ReverseSDE(ensemble_DA):
             xb_mean = self.nm.compute_snapshot_mean(self.XB)
             xa_mean = self.nm.compute_snapshot_mean(self.XA)
 
-            var_name = "TG0"
+            var_name = "TG1"
             level    = 7  # surface
-
-            grid_bkg = _extract_grid_from_mean_state(xb_mean, var_name, level)
-            grid_ana = _extract_grid_from_mean_state(xa_mean, var_name, level)
 
             # Load truth for this cycle: snapshots/reference_solution_{k}.nc
             truth_path = os.path.join(self.nm.path, "snapshots", f"reference_solution_{k}.nc")
