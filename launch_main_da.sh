@@ -20,6 +20,6 @@ export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
 
 cd amlcs/
 
-srun python amlcs_da.py amlcs_da_t21_LEnKF_s2r1.csv
+srun python amlcs_da.py amlcs_da_LeNKF_t21_50_s1r1.csv
 
 echo "--- Main DA Job Finished ---"

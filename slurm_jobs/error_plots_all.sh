@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=ENSF_MAIN_GAUSSIAN_CHECK
-#SBATCH --output=ENSF_MAIN_GAUSSIAN_CHECK_%j.out
-#SBATCH --error=ENSF_MAIN_GAUSSIAN_CHECK_%j.err
+#SBATCH --job-name=ERROR_OBS_PRECALC
+#SBATCH --output=error_plots_all_%j.out
+#SBATCH --error=error_plots_all_%j.err
 #SBATCH --account=chipilskigroup_q
 #SBATCH --partition=chipilskigroup_q
 #SBATCH -t 04:00:00
@@ -9,7 +9,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=12G
 
-echo "--- Main DA Job Started ---"
+echo "--- Main Plotting Job Started ---"
 
 module purge
 module load gnu/4.8.5
@@ -20,6 +20,6 @@ export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
 
 cd ../amlcs/
 
-srun python amlcs_da.py amlcs_da_ENKF_MC_obs.csv
+srun python error_plots_all_methods.py 
 
-echo "--- Main DA Job Finished ---"
+echo "--- Main Plotting Job Finished ---"
