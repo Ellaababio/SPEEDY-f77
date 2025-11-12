@@ -424,6 +424,7 @@ class ReverseSDE(ensemble_DA):
                  eps_alpha: float = 0.05,
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025,
+                 nonlinear_obs: bool = False,
                  rng_seed: int = 42):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
@@ -432,14 +433,13 @@ class ReverseSDE(ensemble_DA):
         self.eps_beta = float(eps_beta)
         self.rng = np.random.RandomState(int(rng_seed))
         self._cycle_idx = 0  # incremented once per perform_assimilation() call
+        self.nonlinear_obs = bool(nonlinear_obs)  # ← add this line
         # Per-block working storage
         self.XB_map = []      # background info (like other methods)
         self.obs_map = []     # per-block obs mappings prepared in prepare_analysis
         self.XA_map = None
     # ===== BEGIN: generic grid dump helpers =====
-    # ---- Unified CSV config: which (var,level) to dump per cycle ----
-    # --- Which (var,level) to dump per cycle ---
-    _UNIFIED_DUMP = [("TG1", 7)]  # add more tuples as needed
+
 
     def _var_index(self, name: str) -> int:
         return list(self.nm.var_names).index(name)
@@ -501,7 +501,18 @@ class ReverseSDE(ensemble_DA):
         # file templates for truth / noda at cycle k
         ref_nc  = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
         noda_nc = os.path.join(self.nm.free_run,   f"free_run_{cycle_k}.nc")
-        _UNIFIED_DUMP = [("TG1", 7)]  # add more tuples as needed
+        # ---- Unified CSV config: which (var,level) to dump per cycle ----
+        # ---- Unified CSV dump configuration ----
+        # Dump for five primary level-1 variables (no TG0 etc.)
+        # Each tuple = (variable_name, level_index)
+        _UNIFIED_DUMP = [
+            ("TG1", 7),   # temperature at level 1
+            ("UG1", 7),   # zonal wind at level 1
+            ("VG1", 7),   # meridional wind at level 1
+            ("TRG1", 7),  # humidity traces at level 1
+            ("PSG1", 0),  # surface pressure (2-D)
+            ]
+        # add more tuples as needed
         for vname, lev in _UNIFIED_DUMP:
             # locate field within blocks
             try:
@@ -796,32 +807,6 @@ class ReverseSDE(ensemble_DA):
         mc_len = len(self.nm.mask_cor)
 
         print(f"[ReverseSDE] preflight: XB_map={xb_len}, obs_map={om_len}, mask_cor={mc_len}")
-        '''
-        # One-time dump of block_map.json (only if maps are present and we haven't dumped yet)
-        if xb_len > 0 and not getattr(self, "_block_map_dumped", False):
-            try:
-                blocks = []
-                for b_idx, items in enumerate(self.nm.mask_cor):
-                    vars_set, levs_set = set(), set()
-                    for it in items:
-                        (v_idx, lev) = it[0]
-                        vars_set.add(self.nm.var_names[v_idx])
-                        levs_set.add(int(lev))
-                    blocks.append({
-                        "block_idx": b_idx,
-                        "vars": sorted(vars_set),
-                        "levels": sorted(levs_set)
-                    })
-                out = {"var_names": list(self.nm.var_names), "blocks": blocks}
-                out_path = os.path.join(self.nm.path, "block_map.json")
-                with open(out_path, "w") as f:
-                    json.dump(out, f, indent=2)
-                print(f"[ReverseSDE] wrote block_map.json -> {out_path}")
-            except Exception as e:
-                print(f"[ReverseSDE] WARNING: failed to write block_map.json: {e}")
-            finally:
-                self._block_map_dumped = True  # never attempt again this process
-        '''
         self.XA_map = []
 
         # AUTO-FALLBACK if XB_map missing (no background prepared)
@@ -900,30 +885,59 @@ class ReverseSDE(ensemble_DA):
                 self.XA_map.append(XA_block_fallback)
                 continue
 
-            # Observed vectors (now filtered)
+            # ============================================================
+            # (A) PRE-NORMALIZATION (shared for both linear & nonlinear)
+            # ============================================================
+            idx_ob = OM["idx_observed"]
             y = OM["y"].reshape(-1)
             sigma = OM["sigma"].reshape(-1)
             m = idx_ob.size
 
-            # Prior ensemble in (Nens, n_block)
-            prior_ens = XB.T.copy()
+            prior_ens = XB.T.copy()                     # (Nens, n_block)
+            X0_obs = prior_ens[:, idx_ob]               # (Nens, m)
+            mean_X0 = _np.nanmean(X0_obs, axis=0)       # (m,)
+            std_X0  = _np.nanstd(X0_obs, axis=0)
+            std_X0  = _np.clip(std_X0, 1e-5, None)      # avoid div/0
+            X0_obs_n = (X0_obs - mean_X0) / std_X0      # (Nens, m)
 
-            # Normalize observed subspace
-            X0_obs = prior_ens[:, idx_ob]                 # (Nens, m)
-            mean_X0 = X0_obs.mean(axis=0)                 # (m,)
-            std_X0  = X0_obs.std(axis=0) + 1e-12          # (m,)
-            X0_obs_n = (X0_obs - mean_X0) / std_X0        # (Nens, m)
+            # ============================================================
+            # (B) TOGGLE: LINEAR vs NONLINEAR OBSERVATION HANDLING
+            # ============================================================
+            if getattr(self, "nonlinear_obs", False):
+                # --- Nonlinear case ---
+                eps = 1e-8
+                sf = float(getattr(self, "scalefact", 1.0))
 
-            # AFTER
-            y_n     = ((y -        mean_X0) / std_X0).reshape(-1)
-            sigma_n = ((sigma /    std_X0)           ).reshape(-1)
+                # Clamp observations before applying tan() to avoid Inf
+                y_clamped = _np.clip(y, -1.55, 1.55)
+                tan_y = _np.tan(y_clamped)
 
-            # Torch tensors
-            X0_obs_n_t = _torch.from_numpy(X0_obs_n).to(device=device, dtype=_torch.float32)
-            y_n_t      = _torch.from_numpy(y_n).to(device=device, dtype=_torch.float32)
-            sigma_n_t  = _torch.from_numpy(sigma_n).to(device=device, dtype=_torch.float32)
+                # Nonlinear normalization following Rev_SDE.normalize()
+                y_n = _np.arctan(((tan_y / sf - mean_X0) / std_X0) * sf)
 
-            # Initialize reverse SDE state
+                sigma_eff = sigma.copy()
+                sigma_eff = _np.where(_np.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
+                sigma_n = sigma_eff / (0.01 * std_X0)
+
+                # Nonlinear ensemble normalization (same transform)
+                X0_obs_n_t = _torch.from_numpy(
+                    _np.arctan(sf * X0_obs_n).astype(_np.float32)
+                ).to(device)
+                y_n_t = _torch.from_numpy(y_n.astype(_np.float32)).to(device)
+                sigma_n_t = _torch.from_numpy(sigma_n.astype(_np.float32)).to(device)
+
+            else:
+                # --- Linear case (original) ---
+                y_n = ((y - mean_X0) / std_X0).reshape(-1)
+                sigma_n = (sigma / std_X0).reshape(-1)
+
+                X0_obs_n_t = _torch.from_numpy(X0_obs_n.astype(_np.float32)).to(device)
+                y_n_t = _torch.from_numpy(y_n.astype(_np.float32)).to(device)
+                sigma_n_t = _torch.from_numpy(sigma_n.astype(_np.float32)).to(device)
+
+            # ============================================================
+            # (C) INITIALIZE REVERSE SDE STATE (common)
+            # ============================================================
             xt = _torch.randn((Nens, m), device=device, dtype=_torch.float32)
             xt_means_hist = _torch.zeros((hist_len, m), device=device, dtype=_torch.float32)
             t = 1.0
@@ -956,10 +970,18 @@ class ReverseSDE(ensemble_DA):
                 f       = self._f(t)
                 g       = self._g(t)
                 tau     = self._g_tau(t)
-
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
-                like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
-
+                # =====================================================
+                #  TOGGLE: Linear vs Nonlinear likelihood
+                # =====================================================
+                if self.nonlinear_obs:
+                    sf = float(self.scalefact)
+                    h_xt = _torch.atan(sf * xt)
+                    like_score = -(h_xt - y_n_t) / (sigma_n_t ** 2) * (
+                        sf / (1.0 + (sf * xt) ** 2)
+                    )
+                else:
+                    like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
                 # tempered likelihood score that actually enters the drift
                 like_tau = tau * like_score
 
@@ -1048,52 +1070,6 @@ class ReverseSDE(ensemble_DA):
                 XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])
                 XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
-        # ---------- generic grid dump call (TG1 level 7 by default) ----------
-        # --- grid dump (safe version) ---
-        # --- grid dump (per-cycle) ---
-        # ---- write raw grid values for one var/level (e.g., TG1 @ lev 7) ----
-        k = getattr(self, "_cycle_idx", 0)  # per-cycle counter you added earlier
-        var_name = "TG1"
-        level    = 7  # surface
-
-        try:
-            k = getattr(self, "_cycle_idx", 0)  # your per-cycle counter
-
-            # Require both ensembles to exist
-            if getattr(self, "XB", None) is None or getattr(self, "XA", None) is None:
-                raise RuntimeError(f"XB or XA is None at cycle {k}; skipping grid dump.")
-
-            # Ensemble means from your model wrapper
-            xb_mean = self.nm.compute_snapshot_mean(self.XB)
-            xa_mean = self.nm.compute_snapshot_mean(self.XA)
-
-            var_name = "TG1"
-            level    = 7  # surface
-
-            # Load truth for this cycle: snapshots/reference_solution_{k}.nc
-            truth_path = os.path.join(self.nm.path, "snapshots", f"reference_solution_{k}.nc")
-            with NC(truth_path, "r") as ds_ref:
-                arr = ds_ref[var_name][:]
-                if var_name.startswith("TRG") and arr.ndim == 4:
-                    arr = arr[0, ...]
-                grid_truth = (arr if var_name.startswith("PSG") else arr[level, :, :]).astype(float)
-
-            # Optional: load NoDA grid for this cycle: free_run/free_run_{k}.nc
-            grid_noda = None
-            noda_path = os.path.join(self.nm.path, "free_run", f"free_run_{k}.nc")
-            if os.path.exists(noda_path):
-                with NC(noda_path, "r") as ds_noda:
-                    arr = ds_noda[var_name][:]
-                    if var_name.startswith("TRG") and arr.ndim == 4:
-                        arr = arr[0, ...]
-                    grid_noda = (arr if var_name.startswith("PSG") else arr[level, :, :]).astype(float)
-
-            out_dir = getattr(self.nm, "path", ".")
-            out_csv = os.path.join(out_dir, f"{var_name}_lev{level}_values_cycle{k}.csv")
-            write_grid_values_csv(var_name, level, grid_bkg, grid_ana, grid_truth, grid_noda, out_csv)
-        except Exception as e:
-            print(f"[grid-values] {var_name}@lev{level} cycle={locals().get('k','?')} skipped: {e}")
-
         self.map_vector_states()
         # >>> write one unified CSV per requested field, now that analysis exists
         self._dump_unified_flat(cycle_k=getattr(self, "current_cycle_k", 0))
