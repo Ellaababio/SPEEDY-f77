@@ -149,16 +149,21 @@ class EnKF_MC_obs(ensemble_DA):
         for block in range(0, N_blocks):
             Ys_block = ob.get_perturbed_observations(block, k, Nens);  
             self.Ys.append(Ys_block); 
+        # store unperturbed obs for each block (same source ReverseSDE used)
+        self.Y_unp = [ob.y_obs[k][block] for block in range(0, N_blocks)]
+        self._cycle_k = k
     
     def perform_assimilation(self, ob):
         self.XA_map = [];
-        for XB_info, Ys_block, R_info, H_block in zip(self.XB_map, self.Ys, ob.obs_R_sparse, ob.obs_H_sparse):
+        for block, (XB_info, Ys_block, R_info, H_block) in enumerate(zip(self.XB_map, self.Ys, ob.obs_R_sparse, ob.obs_H_sparse)):
             XB_block = XB_info['XB_b'];
             R_block  = R_info['R'];
             Binv_sqrt_block = XB_info['Binv_s_b'];
             XA_block = self.perform_assimilation_block(XB_block, Binv_sqrt_block, H_block, R_block, Ys_block);
             XA_block = self.covariance_inflation(XA_block);
             self.XA_map.append(XA_block);
+            # write unified CSVs for this block/cycle
+            self._write_unified_csv_block(block, H_block, R_block, XB_block, XA_block)
         self.map_vector_states(); #Update ensemble folders
     
     def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys):
@@ -180,6 +185,88 @@ class EnKF_MC_obs(ensemble_DA):
           XA = XB + DXa;  
           
           return XA;
+    
+    # ------------------ minimal CSV writer (NetCDF truth/NoDA) ------------------
+    def _write_unified_csv_block(self, block, H_block, R_block, XB_block, XA_block):
+        # ensemble means
+        xb_mean_full = XB_block.mean(axis=1)        # (n_block,)
+        xa_mean_full = XA_block.mean(axis=1)        # (n_block,)
+
+        # observation indices for this block (sorted by row)
+        Hc = H_block.tocoo()
+        order = np.argsort(Hc.row)
+        obs_idx_block = Hc.col[order].astype(int)
+
+        # unperturbed obs and sigma
+        y_unp = self.Y_unp[block].reshape(-1)
+        obs_vals = y_unp[: obs_idx_block.size]
+        try:
+            R_diag = R_block.diagonal()
+        except Exception:
+            R_diag = np.array(R_block.todense()).diagonal()
+        sigma_vec = np.sqrt(np.asarray(R_diag)).reshape(-1)[: obs_idx_block.size]
+
+        # load truth / noDA snapshots for this cycle
+        k = self._cycle_k
+        ref_nc = os.path.join(self.nm.snapshots, f"reference_solution_{k}.nc")
+        fru_nc = os.path.join(self.nm.free_run,    f"free_run_{k}.nc")
+        X_ref = self.nm.load_netcdf_file(ref_nc)   # list per variable
+        X_nod = self.nm.load_netcdf_file(fru_nc)
+
+        # iterate var/level slices inside this block using mask_cor
+        offset = 0
+        for (v_info, res) in self.nm.mask_cor[block]:
+            v_idx, lev = v_info
+            lat, lon = res
+            n = int(lat) * int(lon)
+            start, end = offset, offset + n
+            offset = end
+
+            var_name = self.nm.var_names[v_idx]
+            lev_tag  = f"lev{lev}"
+
+            # segment xb/xa
+            xb = xb_mean_full[start:end]
+            xa = xa_mean_full[start:end]
+
+            # segment truth/noDA directly from NetCDF arrays
+            if 'PSG' in var_name:
+                tr2d = X_ref[v_idx][:, :]
+                nd2d = X_nod[v_idx][:, :]
+            else:
+                tr2d = X_ref[v_idx][lev, :, :]
+                nd2d = X_nod[v_idx][lev, :, :]
+            tr = tr2d.reshape(-1)
+            nd = nd2d.reshape(-1)
+
+            # obs fields projected into this segment
+            obs = np.full(n, np.nan, float)
+            sig = np.full(n, np.nan, float)
+            iso = np.zeros(n, dtype=int)
+            in_seg = (obs_idx_block >= start) & (obs_idx_block < end)
+            if in_seg.any():
+                local = obs_idx_block[in_seg] - start
+                obs[local] = obs_vals[in_seg]
+                sig[local] = sigma_vec[in_seg]
+                iso[local] = 1
+
+            # write CSV
+            df = pd.DataFrame({
+                "idx":     np.arange(n, dtype=int),
+                "xb_mean": xb.astype(float),
+                "xa_mean": xa.astype(float),
+                "truth":   tr.astype(float),
+                "noda":    nd.astype(float),
+                "obs":     obs,
+                "sigma":   sig,
+                "is_obs":  iso
+            })
+            out_dir = self.nm.path
+            os.makedirs(out_dir, exist_ok=True)
+            fn = os.path.join(out_dir, f"{var_name}_{lev_tag}_cycle{k}.csv")
+            df.to_csv(fn, index=False)
+
+
       
          
 ##########################################################################################

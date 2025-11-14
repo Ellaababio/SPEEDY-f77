@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=DA_MAIN
-#SBATCH --output=DA_MAIN_%j.out
-#SBATCH --error=DA_MAIN_%j.err
+#SBATCH --job-name=ENKF_MC_OBS
+#SBATCH --output=ENKF_MC_OBS_%j.out
+#SBATCH --error=ENKF_MC_OBS_%j.err
 #SBATCH --account=chipilskigroup_q
 #SBATCH --partition=chipilskigroup_q
 #SBATCH -t 04:00:00
@@ -20,6 +20,6 @@ export LD_LIBRARY_PATH=$HOME/speedy_libs/lib:$LD_LIBRARY_PATH
 
 cd amlcs/
 
-srun python amlcs_da.py amlcs_da_LeNKF_t21_50_s1r1.csv
+srun python amlcs_da.py amlcs_da_ENKF_MC_obs.csv
 
 echo "--- Main DA Job Finished ---"
