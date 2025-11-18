@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 REV_DIR  = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100"    # reverseSDE_cycle<k>.nc
 ENKF_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100"   # unified_cycle<k>.nc
 
-OUT_DIR = os.path.join(ENKF_DIR, "comparison_1d_plots_nc")
+OUT_DIR = os.path.join(ENKF_DIR, "comparison_1d_plots_new")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 VAR_LIST = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
