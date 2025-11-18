@@ -1,101 +1,169 @@
 #!/usr/bin/env python3
 """
-Dual-run error plotting: ENSF vs LEnKF (five curves per figure).
+Dual-run error plotting: generic method1 vs method2 (five curves per figure).
+NO COMMAND-LINE ARGUMENTS. Everything is configured in the USER SETTINGS
+section below.
 
-Generates two families of plots:
-  (A) Per-level plots for each requested variable:
-      - For 3D variables (TG*, UG*, VG*, TRG*): one figure PER LEVEL.
-        Note: TRG has no data at levels 0 or 1; those levels are skipped.
-      - For PSG*: only level 0 exists.
-      Each figure includes 5 curves:
-        NoDA (black solid),
-        ENSF Analysis (blue solid),
-        ENSF Background (blue dashed),
-        LEnKF Analysis (orange solid),
-        LEnKF Background (orange dashed).
-  (B) Level-averaged plots for each variable (averaging over available levels).
-
-ANCHOR EXPLANATION (plotting only; does NOT alter your data):
-- --anchor step1  → Prepends a single synthetic point (t=0) to ALL curves equal to the FIRST NoDA value.
-                    This makes every curve start from the same visible baseline before cycle 1.
-- --anchor step0  → No synthetic point; curves begin at the first cycle in the CSVs.
-
-SCALING / OUTPUT DIRS:
-- --scale log     → log-scaled errors; saved under <plot_dir_name>/
-- --scale linear  → absolute errors; saved under <plot_dir_name>_abs/
-- --scale both    → write BOTH sets to the two sibling directories above.
+Generates two families of plots for each variable:
+  (A) Per-level plots (each level per figure)
+  (B) Level-averaged plots
 """
 
+###############################################################################
+# ======================= USER SETTINGS (EDIT THESE) ==========================
+###############################################################################
+
+# FULL PATHS to the two experiment directories you want to compare:
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100"
+
+# SPEEDY resolution:
+RESOLUTION = "t21"
+
+# Number of assimilation steps M (needed to compute NODA)
+M = 5
+
+# Variables to compare:
+VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
+
+# Anchor mode: "step0" or "step1"
+ANCHOR = "step1"
+
+# Scale mode: "log", "linear", or "both"
+SCALE_MODE = "both"
+
+# Output directory name (optional)
+# If None → "<method1>_vs_<method2>"
+PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_new_drift'  
+
+###############################################################################
+# ======================= END USER SETTINGS ==================================
+###############################################################################
+
 from pathlib import Path
-import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Resolved in the user's environment
+# imports from AMLCS
 from grid_resolution import grid_resolution
 from postpro_tools import postpro_tools
 
-# Consistent math font and sizing
+# Formatting
 import matplotlib
 matplotlib.rcParams["mathtext.fontset"] = "stix"
 matplotlib.rcParams["font.family"] = "STIXGeneral"
 matplotlib.rcParams.update({"font.size": 14})
 
+# Pretty variable names
 VAR_CODES = {
     "TG0": "T_0", "UG0": "u_0", "VG0": "v_0", "TRG0": "Hq_0", "PSG0": "PS_0",
     "TG1": "T_1", "UG1": "u_1", "VG1": "v_1", "TRG1": "Hq_1", "PSG1": "PS_1",
 }
 PS_LEVELS_MB = [30, 100, 200, 300, 500, 700, 850, 925]
 
-def _read_series(df: pd.DataFrame, lvl: int) -> np.ndarray:
+# Fixed colors — ReverseSDE is blue
+METHOD_COLORS = {
+    "ReverseSDE": "tab:blue",
+    "EnKF_MC_obs": "tab:orange",
+    "LETKF": "tab:green",
+    "LEnKF": "tab:red",
+    "EnKF": "tab:purple",
+}
+
+###############################################################################
+# --------------------- Utility Functions ------------------------------------
+###############################################################################
+
+def _extract_method_name(exp_path: Path) -> str:
+    """
+    Option B: infer method name from directory basename.
+    Pattern example:
+        t21_50_0.05_5_EnKF_MC_obs_1_1_100
+          ^   ^     ^  ^  [method]    ^  ^
+          0   1     2  3     4:-3     -3:-1
+
+    Returns METHOD = parts[4:-3] joined with "_".
+    """
+    name = exp_path.name.rstrip("/")
+    parts = name.split("_")
+
+    if len(parts) > 7:
+        mid = parts[4:-3]
+        if mid:
+            return "_".join(mid)
+
+    # fallback
+    for token in reversed(parts):
+        try:
+            float(token)
+        except ValueError:
+            return token
+    return name
+
+
+def _read_series(df, lvl):
     col = str(lvl)
     if col not in df.columns:
-        return np.array([], dtype=float)
-    return df[col].to_numpy(dtype=float)
+        return np.array([])
+    return df[col].to_numpy()
 
-def _make_anchor(series: np.ndarray, anchor_value: float | None):
-    if anchor_value is None:
+
+def _make_anchor(series, anchor_val):
+    if anchor_val is None:
         return series
-    return np.concatenate([np.array([anchor_value], dtype=float), series])
+    return np.concatenate([np.array([anchor_val]), series])
 
-def _five_curves(ana1, bkg1, ana2, bkg2, noda, anchor_mode: str, scale: str):
+
+def _five_curves(ana1, bkg1, ana2, bkg2, noda, anchor_mode, scale, m1, m2):
     eps = 1e-12
     L = min(len(ana1), len(bkg1), len(ana2), len(bkg2), len(noda))
     if L == 0:
         return None, {}
-    ana1, bkg1, ana2, bkg2, noda = ana1[:L], bkg1[:L], ana2[:L], bkg2[:L], noda[:L]
-    anchor_val = noda[0] if anchor_mode.lower() == "step1" else None
+
+    ana1, bkg1, ana2, bkg2, noda = (
+        ana1[:L], bkg1[:L], ana2[:L], bkg2[:L], noda[:L]
+    )
+    anchor_val = noda[0] if anchor_mode == "step1" else None
+
     ana1 = _make_anchor(ana1, anchor_val)
     bkg1 = _make_anchor(bkg1, anchor_val)
     ana2 = _make_anchor(ana2, anchor_val)
     bkg2 = _make_anchor(bkg2, anchor_val)
     noda = _make_anchor(noda, anchor_val)
-    xs = np.arange(0, len(noda))
+
+    xs = np.arange(len(noda))
+
     if scale == "log":
         curves = {
             "NoDA": np.log(noda + eps),
-            "ENSF Analysis": np.log(ana1 + eps),
-            "ENSF Background": np.log(bkg1 + eps),
-            "LEnKF Analysis": np.log(ana2 + eps),
-            "LEnKF Background": np.log(bkg2 + eps),
+            f"{m1} Analysis": np.log(ana1 + eps),
+            f"{m1} Background": np.log(bkg1 + eps),
+            f"{m2} Analysis": np.log(ana2 + eps),
+            f"{m2} Background": np.log(bkg2 + eps),
         }
     else:
         curves = {
             "NoDA": noda,
-            "ENSF Analysis": ana1,
-            "ENSF Background": bkg1,
-            "LEnKF Analysis": ana2,
-            "LEnKF Background": bkg2,
+            f"{m1} Analysis": ana1,
+            f"{m1} Background": bkg1,
+            f"{m2} Analysis": ana2,
+            f"{m2} Background": bkg2,
         }
+
     return xs, curves
 
-def _plot_curves(xs, curves, title, out_path, scale: str):
+
+def _plot_curves(xs, curves, title, out_path, scale, m1, m2):
     plt.figure(figsize=(9, 4))
-    plt.title(title)
-    method_colors = {"ENSF": "tab:blue", "LEnKF": "tab:orange"}
     style = {"Analysis": "-", "Background": "--"}
-    order = ["NoDA", "ENSF Analysis", "ENSF Background", "LEnKF Analysis", "LEnKF Background"]
+
+    order = [
+        "NoDA",
+        f"{m1} Analysis", f"{m1} Background",
+        f"{m2} Analysis", f"{m2} Background",
+    ]
+
     for label in order:
         if label not in curves:
             continue
@@ -103,146 +171,141 @@ def _plot_curves(xs, curves, title, out_path, scale: str):
         if label == "NoDA":
             plt.plot(xs, y, label=label, color="k", linestyle="-")
         else:
-            meth, kind = label.split()  # e.g., "ENSF", "Analysis"
-            plt.plot(xs, y, label=label, color=method_colors[meth], linestyle=style[kind])
-    plt.ylabel(r"$\log(\mathcal{l}_2)$" if scale == "log" else r"$\mathcal{l}_2$")
-    plt.xlabel(r"$\mathrm{Assimilation\ Step}$")
-    plt.legend(loc="best", prop={"size": 12}, ncol=2)
+            meth, kind = label.split(maxsplit=1)
+            color = METHOD_COLORS.get(meth, None)
+            ls = style[kind]
+            plt.plot(xs, y, label=label, linestyle=ls, color=color)
+
+    plt.title(title)
+    plt.xlabel("Assimilation Step")
+    plt.ylabel("log(l2)" if scale == "log" else "l2")
+    plt.legend()
     plt.tight_layout()
     plt.savefig(out_path, bbox_inches="tight")
     plt.close()
 
-def _levels_for_var(var: str) -> list[int]:
+
+def _levels_for_var(var):
     if "PSG" in var:
         return [0]
     if var.startswith("TRG"):
-        # Humidity has no data at levels 0 or 1 in this setup
         return list(range(2, 8))
-    # TG*, UG*, VG* have 8 levels (0..7)
     return list(range(8))
 
-def dual_error_plots(ensf_path: Path, lenkf_path: Path, vars_list, grid_res: str, M: int, anchor: str, plot_dir_name: str, scale_mode: str):
-    ensf_path = ensf_path.resolve()
-    lenkf_path = lenkf_path.resolve()
+###############################################################################
+# --------------------------- Main Work ---------------------------------------
+###############################################################################
 
-    # Compute NoDA baseline once (method-independent)
-    gs = grid_resolution(grid_res)
-    ppt_ensf = postpro_tools(grid_res, gs, ensf_path, M)
-    ppt_ensf.compute_NODA()
+def run_dual_plots():
+    exp1 = Path(EXP1).resolve()
+    exp2 = Path(EXP2).resolve()
 
-    # Decide output dirs
-    out_log = ensf_path / "plots" / "errors" / plot_dir_name
-    out_abs = ensf_path / "plots" / "errors" / f"{plot_dir_name}_abs"
-    out_log_mirror = lenkf_path / "plots" / "errors" / plot_dir_name
-    out_abs_mirror = lenkf_path / "plots" / "errors" / f"{plot_dir_name}_abs"
+    method1 = _extract_method_name(exp1)
+    method2 = _extract_method_name(exp2)
 
-    def _ensure_dirs(scale: str):
+    out_name = PLOT_DIR_NAME or f"{method1}_vs_{method2}"
+
+    print(f"Comparing:")
+    print(f"  EXP1={exp1}  (method={method1})")
+    print(f"  EXP2={exp2}  (method={method2})")
+    print(f"Output directory tag: {out_name}")
+
+    # Compute NoDA baseline using exp1
+    gs = grid_resolution(RESOLUTION)
+    ppt = postpro_tools(RESOLUTION, gs, exp1, M)
+    ppt.compute_NODA()
+
+    root1 = exp1 / "plots" / "errors"
+    root2 = exp2 / "plots" / "errors"
+
+    def _ensure(scale):
         if scale == "log":
-            out_log.mkdir(parents=True, exist_ok=True)
-            out_log_mirror.mkdir(parents=True, exist_ok=True)
-            return out_log
-        elif scale == "linear":
-            out_abs.mkdir(parents=True, exist_ok=True)
-            out_abs_mirror.mkdir(parents=True, exist_ok=True)
-            return out_abs
+            d1 = root1 / out_name
+            d2 = root2 / out_name
         else:
-            raise ValueError("scale must be 'log' or 'linear' at this point.")
+            d1 = root1 / f"{out_name}_abs"
+            d2 = root2 / f"{out_name}_abs"
+        d1.mkdir(parents=True, exist_ok=True)
+        d2.mkdir(parents=True, exist_ok=True)
+        return d1  # only need one for saving
 
-    scales = ["log", "linear"] if scale_mode == "both" else [scale_mode]
+    scales = ["log", "linear"] if SCALE_MODE == "both" else [SCALE_MODE]
 
-    # --- (A) Per-level plots ---
-    for var in vars_list:
-        # Input CSVs for each method
-        ana1 = pd.read_csv(ensf_path / "results" / f"{var}_ana.csv")
-        bkg1 = pd.read_csv(ensf_path / "results" / f"{var}_bck.csv")
-        ana2 = pd.read_csv(lenkf_path / "results" / f"{var}_ana.csv")
-        bkg2 = pd.read_csv(lenkf_path / "results" / f"{var}_bck.csv")
+    # ------------------- LEVEL BY LEVEL -------------------
+    for var in VARS:
+        ana1 = pd.read_csv(exp1 / "results" / f"{var}_ana.csv")
+        bkg1 = pd.read_csv(exp1 / "results" / f"{var}_bck.csv")
+        ana2 = pd.read_csv(exp2 / "results" / f"{var}_ana.csv")
+        bkg2 = pd.read_csv(exp2 / "results" / f"{var}_bck.csv")
 
         lvls = _levels_for_var(var)
+
         for lvl in lvls:
             s_ana1 = _read_series(ana1, lvl)
             s_bkg1 = _read_series(bkg1, lvl)
             s_ana2 = _read_series(ana2, lvl)
             s_bkg2 = _read_series(bkg2, lvl)
-            s_noda = np.asarray(ppt_ensf.noda[var][lvl, :], dtype=float)
+            s_noda = ppt.noda[var][lvl, :]
 
             for scale in scales:
-                out_dir = _ensure_dirs(scale)
-                xs, curves = _five_curves(s_ana1, s_bkg1, s_ana2, s_bkg2, s_noda, anchor, scale)
+                out_dir = _ensure(scale)
+                xs, curves = _five_curves(
+                    s_ana1, s_bkg1, s_ana2, s_bkg2, s_noda,
+                    ANCHOR, scale, method1, method2
+                )
                 if xs is None:
-                    print(f"[skip] no data for {var} level {lvl} (scale={scale})")
                     continue
-                mb_txt = PS_LEVELS_MB[lvl] if lvl < len(PS_LEVELS_MB) else lvl
-                title = rf"$\mathrm{{{VAR_CODES.get(var, var)}}} \ \mathrm{{(lev\ {lvl},\ {mb_txt}\ mb)}}$"
-                out = out_dir / f"dual_single_{var}_lev{lvl}.png"
-                _plot_curves(xs, curves, title, out, scale)
 
-    # --- (B) Level-averaged plots ---
-    for var in vars_list:
-        ana1 = pd.read_csv(ensf_path / "results" / f"{var}_ana.csv")
-        bkg1 = pd.read_csv(ensf_path / "results" / f"{var}_bck.csv")
-        ana2 = pd.read_csv(lenkf_path / "results" / f"{var}_ana.csv")
-        bkg2 = pd.read_csv(lenkf_path / "results" / f"{var}_bck.csv")
+                mb = PS_LEVELS_MB[lvl] if lvl < len(PS_LEVELS_MB) else lvl
+                title = f"{VAR_CODES.get(var,var)} (lev {lvl}, {mb} mb)"
+                out_file = out_dir / f"dual_single_{var}_lev{lvl}.png"
+                _plot_curves(xs, curves, title, out_file, scale, method1, method2)
+
+    # ------------------- LEVEL-AVERAGED -------------------
+    for var in VARS:
+        ana1 = pd.read_csv(exp1 / "results" / f"{var}_ana.csv")
+        bkg1 = pd.read_csv(exp1 / "results" / f"{var}_bck.csv")
+        ana2 = pd.read_csv(exp2 / "results" / f"{var}_ana.csv")
+        bkg2 = pd.read_csv(exp2 / "results" / f"{var}_bck.csv")
 
         lvls = _levels_for_var(var)
 
-        def _avg_over_levels(df: pd.DataFrame, lvls: list[int]) -> np.ndarray:
-            series_list = []
-            for L in lvls:
-                s = _read_series(df, L)
-                if len(s) > 0:
-                    series_list.append(s)
-            if not series_list:
-                return np.array([], dtype=float)
-            Lmin = min(len(s) for s in series_list)
-            stack = np.vstack([s[:Lmin] for s in series_list])
-            return stack.mean(axis=0)
+        def avg(df):
+            arrs = [ _read_series(df, L) for L in lvls ]
+            arrs = [a for a in arrs if len(a) > 0]
+            if not arrs:
+                return np.array([])
+            Lmin = min(len(a) for a in arrs)
+            return np.vstack([a[:Lmin] for a in arrs]).mean(axis=0)
 
-        s_ana1 = _avg_over_levels(ana1, lvls)
-        s_bkg1 = _avg_over_levels(bkg1, lvls)
-        s_ana2 = _avg_over_levels(ana2, lvls)
-        s_bkg2 = _avg_over_levels(bkg2, lvls)
+        s_ana1 = avg(ana1)
+        s_bkg1 = avg(bkg1)
+        s_ana2 = avg(ana2)
+        s_bkg2 = avg(bkg2)
 
-        noda_levels = [np.asarray(ppt_ensf.noda[var][L, :], dtype=float) for L in lvls]
-        Lmin_noda = min(len(x) for x in noda_levels) if lvls else 0
-        s_noda = np.vstack([x[:Lmin_noda] for x in noda_levels]).mean(axis=0) if Lmin_noda > 0 else np.array([], dtype=float)
+        noda_levels = [
+            ppt.noda[var][L, :] for L in lvls
+        ]
+        Lmin = min(len(x) for x in noda_levels)
+        s_noda = np.vstack([x[:Lmin] for x in noda_levels]).mean(axis=0)
 
         for scale in scales:
-            out_dir = _ensure_dirs(scale)
-            xs, curves = _five_curves(s_ana1, s_bkg1, s_ana2, s_bkg2, s_noda, anchor, scale)
+            out_dir = _ensure(scale)
+            xs, curves = _five_curves(
+                s_ana1, s_bkg1, s_ana2, s_bkg2, s_noda,
+                ANCHOR, scale, method1, method2
+            )
             if xs is None:
-                print(f"[skip] no averaged data for {var} (scale={scale})")
                 continue
-            title = rf"$\mathrm{{{VAR_CODES.get(var, var)}}} \ \mathrm{{(Level\ Average)}}$"
-            out = out_dir / f"dual_levelavg_{var}.png"
-            _plot_curves(xs, curves, title, out, scale)
 
-def main():
-    p = argparse.ArgumentParser(description="Plot ENSF vs LEnKF error curves (five lines) per variable.")
-    p.add_argument("--ensf_exp", required=True, help="Path to ENSF experiment directory (e.g., ../runs/t21_..._ENSF_...)")
-    p.add_argument("--lenkf_exp", required=True, help="Path to LEnKF experiment directory (e.g., ../runs/t21_..._LEnKF_...)")
-    p.add_argument("--resolution", required=True, help="Grid resolution name (e.g., t21, t30)")
-    p.add_argument("--M", type=int, required=True, help="Number of assimilation steps (used to compute NoDA series)")
-    p.add_argument("--plot_dir_name", default="ENSF_vs_LENKF", help="Subdirectory under plots/errors/ to write figures")
-    p.add_argument("--anchor", choices=["step0", "step1"], default="step1",
-                   help="If step1, prepend a common anchor using the first NoDA value")
-    p.add_argument("--vars", default="TG1,UG1,VG1,TRG1,PSG1",
-                   help="Comma-separated variable list; choose only one of each pair (e.g., TG1 instead of TG0).")
-    p.add_argument("--scale", choices=["log", "linear", "both"], default="both",
-                   help="Which scaling to plot: log (original), linear (absolute errors), or both (creates sibling _abs dir).")
-    args = p.parse_args()
+            title = f"{VAR_CODES.get(var,var)} (Level Average)"
+            out_file = out_dir / f"dual_levelavg_{var}.png"
+            _plot_curves(xs, curves, title, out_file, scale, method1, method2)
 
-    vars_list = [v.strip() for v in args.vars.split(",") if v.strip()]
-    dual_error_plots(
-        ensf_path=Path(args.ensf_exp),
-        lenkf_path=Path(args.lenkf_exp),
-        vars_list=vars_list,
-        grid_res=args.resolution,
-        M=args.M,
-        anchor=args.anchor,
-        plot_dir_name=args.plot_dir_name,
-        scale_mode=args.scale
-    )
+
+###############################################################################
+# ------------------------------ ENTRY POINT ----------------------------------
+###############################################################################
 
 if __name__ == "__main__":
-    main()
+    run_dual_plots()

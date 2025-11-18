@@ -164,7 +164,9 @@ class numerical_model:
           PSG1 = ds.createVariable('PSG1', np.float64, ('lat', 'lon',))
           
           #print([UG0.shape, xs[0].shape]);
-          
+
+          xs[3] = np.clip(xs[3], 0, 50)
+          xs[8] = np.clip(xs[8], 0, 50)
           UG0[:,:,:] = xs[0][:,:,:];
           VG0[:,:,:] = xs[1][:,:,:];
           TG0[:,:,:] = xs[2][:,:,:];

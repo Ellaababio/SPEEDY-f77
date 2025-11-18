@@ -4,6 +4,7 @@ import sys
 import scipy.sparse as spa
 import pandas as pd
 import time
+import json
 from netCDF4 import Dataset
 from commons_utils import compute_modified_Cholesky_decomposition
 import torch
@@ -800,8 +801,6 @@ class ReverseSDE(ensemble_DA):
         - One-time dump of block_map.json for external analyzers.
         - Graceful fallback (inflated background) for any problematic/missing block.
         """
-        import os
-        import json
         import numpy as _np
         import torch as _torch
 
@@ -811,6 +810,36 @@ class ReverseSDE(ensemble_DA):
         SAVE_GAUSS_BLOCKS = False
         GAUSS_DIRNAME = "gauss_checks"
         # ------------------------
+        cycle_k = int(getattr(self, "current_cycle_k", 0))  # from prepare_analysis
+
+        track_file = os.path.join(self.nm.path, "sde_tracking.nc")
+        psteps = int(getattr(self, "p_time_step", 200))
+
+        if cycle_k == 0:
+            nc_init = Dataset(track_file, "w")
+            nc_init.createDimension("cycle", None)
+            nc_init.createDimension("block", None)
+            nc_init.createDimension("psteps", psteps)
+            nc_init.createDimension("var", 5)
+            nc_init.createDimension("ens", None)
+
+            xt_state = nc_init.createVariable(
+                "xt_state", "f4",
+                ("cycle", "block", "psteps", "var", "ens"),
+                zlib=True
+            )
+
+            var_names = nc_init.createVariable("var_names", str, ("var",))
+            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
+            for ii, name in enumerate(var_list):
+                var_names[ii] = name
+
+            nc_init.close()
+
+        nc = Dataset(track_file, "a")
+        xt_state = nc["xt_state"]
+
+        
         OBS_INCLUDE = getattr(self, "obs_include_vars", None)
         if OBS_INCLUDE is not None and not isinstance(OBS_INCLUDE, set):
             OBS_INCLUDE = set(OBS_INCLUDE)
@@ -906,11 +935,12 @@ class ReverseSDE(ensemble_DA):
             # Publish and return
             self.map_vector_states()
             return
-
+        # DEBUG
+        print("ReverseSDE cycle index (k):", cycle_k)
         # Main loop (index-based to avoid zip truncation)
         for block_idx in range(mc_len):
+          
             label = _block_label(block_idx)
-
             # Background info for this block
             try:
                 XB_info = self.XB_map[block_idx]
@@ -941,6 +971,55 @@ class ReverseSDE(ensemble_DA):
             if idx_ob.size == 0:
                 self.XA_map.append(XA_block_fallback)
                 continue
+            # ============================================================
+            # Build obs-space index sets for UG1/VG1/TG1/TRG1@lev7, PSG1
+            # ============================================================
+            # We map *block-local* state indices 0..n_block-1 to (var_name, lev),
+            # then restrict to the observation indices idx_ob (0..m-1).
+            vnames_block = _np.empty(n_block, dtype=object)
+            levs_block   = _np.empty(n_block, dtype=int)
+            off = 0
+            for (v_info, res) in self.nm.mask_cor[block_idx]:
+                (v_idx, lev) = v_info
+                lat_n, lon_n = res
+                N = int(lat_n) * int(lon_n)
+                vname = self.nm.var_names[v_idx]   # e.g., 'UG1', 'TRG1', 'PSG1'
+                vnames_block[off:off+N] = vname
+                levs_block[off:off+N]   = int(lev)
+                off += N
+            if off != n_block:
+                print(f"[ReverseSDE][{label}] WARNING: offset {off} != n_block {n_block}")
+
+            # Restrict to observation locations
+            vnames_obs = vnames_block[idx_ob]   # length m
+            levs_obs   = levs_block[idx_ob]     # length m
+
+            # We track these 5 "variables":
+            #   UG1@lev7, VG1@lev7, TG1@lev7, TRG1@lev7, PSG1 (no vertical levels)
+            tracking_obs_indices = []
+            specs = [
+                ("UG1",  7),
+                ("VG1",  7),
+                ("TG1",  7),
+                ("TRG1", 7),
+                ("PSG1", None),
+            ]
+
+            for base_name, lev_target in specs:
+                if lev_target is None:
+                    mask = (vnames_obs == base_name)
+                else:
+                    mask = (vnames_obs == base_name) & (levs_obs == lev_target)
+                idxs_j = _np.where(mask)[0].astype(_np.int64)  # obs indices j in 0..m-1
+                tracking_obs_indices.append(idxs_j)
+            # Do we actually have any obs for the tracked var/lev combos in this block?
+            has_any_tracked = any(arr.size > 0 for arr in tracking_obs_indices)
+            if not has_any_tracked:
+                # No UG7/VG7/TG7/TRG7@lev7 or PSG1 in this block -> skip tracking for this block
+                # Still do the SDE and analysis normally, just don't write to xt_state.
+                do_track = False
+            else:
+                do_track = True
 
             # >>> CHANGE C: if user requested a subset of variables/time-levels, filter idx_observed down
             if OBS_INCLUDE is not None and len(OBS_INCLUDE) > 0:
@@ -1052,6 +1131,32 @@ class ReverseSDE(ensemble_DA):
                 f       = self._f(t)
                 g       = self._g(t)
                 tau     = self._g_tau(t)
+                # =========================================================
+                # Record SDE state (if this block has any tracked variables)
+                # =========================================================
+                if do_track:
+                    xt_np = xt.detach().cpu().numpy()                  # (Nens, m)
+                    x_obs_step = mean_X0[None, :] + std_X0[None, :] * xt_np   # (Nens, m)
+
+                values = _np.full((5, Nens), _np.nan, dtype=_np.float32)  # default = NaN
+
+                for vidx, obs_idx in enumerate(tracking_obs_indices):
+                    if obs_idx.size == 0:
+                        continue  # leave row as NaN
+                    sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
+                    values[vidx, :] = sub.mean(axis=1).astype(_np.float32)
+
+                    if (i % 20) == 0 or i == 1:
+                        var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
+                        for name, obs_idx, row in zip(var_list, tracking_obs_indices, values):
+                            if obs_idx.size > 0:
+                                print(f"[{label}] pstep={i:03d} {name} mean={row.mean():.4e}")
+
+
+                    # Write into NetCDF only if this block had tracked obs
+                    xt_state[cycle_k, block_idx, i-1, :, :] = values
+
+                # ====== rest of the SDE update is unchanged ======
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
                 # =====================================================
                 #  TOGGLE: Linear vs Nonlinear likelihood
@@ -1093,7 +1198,8 @@ class ReverseSDE(ensemble_DA):
                 # --- end diagnostics ---
 
                 # AFTER (canonical form)
-                drift = -( f * xt + (g ** 2) * prior_term - (g ** 2) * like_tau )
+                drift = -( f * xt + (g ** 2) * prior_term - like_tau ) # old
+                # drift = -( f * xt + (g ** 2) * prior_term - (g ** 2) * like_tau ) # corrected
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
 
@@ -1118,6 +1224,7 @@ class ReverseSDE(ensemble_DA):
             
                 xt = xt_next
                 t = max(0.0, t - dt)
+            
             # Produce XA_block (either fallback or from xt)
             if not block_numeric_ok:
                 self.XA_map.append(XA_block_fallback)
@@ -1144,7 +1251,7 @@ class ReverseSDE(ensemble_DA):
                     print(f"[ReverseSDE][{label}] saved BACKGROUND block for gaussianity: {path_out}")
                 except Exception as e:
                     print(f"[ReverseSDE][{label}] WARNING: save failed: {e}")
-
+        nc.close()
         # Final sanity: if XA_map is short, pad with inflated background per block
         if len(self.XA_map) < mc_len:
             print(f"[ReverseSDE] WARNING: XA_map has {len(self.XA_map)} of {mc_len} blocks. Padding with fallbacks.")

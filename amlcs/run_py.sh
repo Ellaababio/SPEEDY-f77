@@ -2,7 +2,6 @@
 
 # Absolute logs directory
 LOG_DIR="/gpfs/home/jjs21b/AMLCS/logs"
-mkdir -p "$LOG_DIR"
 
 # First argument is the script name
 script="$1"
@@ -16,6 +15,15 @@ echo "=== Running: $script"
 echo "=== Params: $@"
 echo "=== Log file: $log"
 echo "=========================================="
+
+# ALSO write metadata to the log file
+{
+    echo "=== Running: $script"
+    echo "=== Params: $@"
+    echo "=== Log file: $log"
+    echo "=== Timestamp: $timestamp"
+    echo "=========================================="
+} >> "$log"
 
 # Python output goes ONLY to log file
 python "$script" "$@" &> "$log"
