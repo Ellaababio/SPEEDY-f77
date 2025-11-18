@@ -162,8 +162,8 @@ class EnKF_MC_obs(ensemble_DA):
             XA_block = self.perform_assimilation_block(XB_block, Binv_sqrt_block, H_block, R_block, Ys_block);
             XA_block = self.covariance_inflation(XA_block);
             self.XA_map.append(XA_block);
-            # write unified CSVs for this block/cycle
-            self._write_unified_csv_block(block, H_block, R_block, XB_block, XA_block)
+            # write unified Netcdf files for this block/cycle
+            self._write_unified_nc_block(block, H_block, R_block, XB_block, XA_block)
         self.map_vector_states(); #Update ensemble folders
     
     def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys):
@@ -187,12 +187,19 @@ class EnKF_MC_obs(ensemble_DA):
           return XA;
     
     # ------------------ minimal CSV writer (NetCDF truth/NoDA) ------------------
-    def _write_unified_csv_block(self, block, H_block, R_block, XB_block, XA_block):
-        # ensemble means
-        xb_mean_full = XB_block.mean(axis=1)        # (n_block,)
-        xa_mean_full = XA_block.mean(axis=1)        # (n_block,)
+    def _write_unified_nc_block(self, block, H_block, R_block, XB_block, XA_block):
+        """
+        HPC-safe NetCDF writer (single .nc per cycle).
+        Does NOT use _FillValue or compression args.
+        """
+        import numpy as np
+        from netCDF4 import Dataset
 
-        # observation indices for this block (sorted by row)
+        # ensemble means
+        xb_mean_full = XB_block.mean(axis=1)
+        xa_mean_full = XA_block.mean(axis=1)
+
+        # sorted observation indices
         Hc = H_block.tocoo()
         order = np.argsort(Hc.row)
         obs_idx_block = Hc.col[order].astype(int)
@@ -200,71 +207,97 @@ class EnKF_MC_obs(ensemble_DA):
         # unperturbed obs and sigma
         y_unp = self.Y_unp[block].reshape(-1)
         obs_vals = y_unp[: obs_idx_block.size]
+
         try:
             R_diag = R_block.diagonal()
-        except Exception:
+        except:
             R_diag = np.array(R_block.todense()).diagonal()
+
         sigma_vec = np.sqrt(np.asarray(R_diag)).reshape(-1)[: obs_idx_block.size]
 
-        # load truth / noDA snapshots for this cycle
+        # load truth/noDA
         k = self._cycle_k
         ref_nc = os.path.join(self.nm.snapshots, f"reference_solution_{k}.nc")
         fru_nc = os.path.join(self.nm.free_run,    f"free_run_{k}.nc")
-        X_ref = self.nm.load_netcdf_file(ref_nc)   # list per variable
+        X_ref = self.nm.load_netcdf_file(ref_nc)
         X_nod = self.nm.load_netcdf_file(fru_nc)
 
-        # iterate var/level slices inside this block using mask_cor
+        # output file
+        out_dir = self.nm.path
+        os.makedirs(out_dir, exist_ok=True)
+        nc_path = os.path.join(out_dir, f"unified_cycle{k}.nc")
+
+        # open NC file
+        if os.path.exists(nc_path):
+            ds = Dataset(nc_path, "a")
+        else:
+            lat, lon = self.nm.gs.get_resolution(self.nm.res)
+            ds = Dataset(nc_path, "w", format="NETCDF4")
+            ds.createDimension("lat", lat)
+            ds.createDimension("lon", lon)
+            ds.cycle = int(k)
+
+        # helper: safe var creation
+        def _get_or_create_var(prefix, var_name, lev_tag, dtype="f8"):
+            vname = f"{prefix}_{var_name}_{lev_tag}"
+            if vname in ds.variables:
+                return ds.variables[vname]
+            return ds.createVariable(vname, dtype, ("lat", "lon"))
+
+        # iterate block slices
         offset = 0
         for (v_info, res) in self.nm.mask_cor[block]:
             v_idx, lev = v_info
             lat, lon = res
-            n = int(lat) * int(lon)
+            n = lat * lon
             start, end = offset, offset + n
             offset = end
 
             var_name = self.nm.var_names[v_idx]
-            lev_tag  = f"lev{lev}"
+            lev_tag = f"lev{lev}"
 
-            # segment xb/xa
-            xb = xb_mean_full[start:end]
-            xa = xa_mean_full[start:end]
+            # background / analysis means
+            xb = xb_mean_full[start:end].astype(float).reshape(lat, lon)
+            xa = xa_mean_full[start:end].astype(float).reshape(lat, lon)
 
-            # segment truth/noDA directly from NetCDF arrays
-            if 'PSG' in var_name:
+            # truth / noda
+            if "PSG" in var_name:
                 tr2d = X_ref[v_idx][:, :]
                 nd2d = X_nod[v_idx][:, :]
             else:
                 tr2d = X_ref[v_idx][lev, :, :]
                 nd2d = X_nod[v_idx][lev, :, :]
-            tr = tr2d.reshape(-1)
-            nd = nd2d.reshape(-1)
+            tr = tr2d.astype(float)
+            nd = nd2d.astype(float)
 
-            # obs fields projected into this segment
-            obs = np.full(n, np.nan, float)
-            sig = np.full(n, np.nan, float)
-            iso = np.zeros(n, dtype=int)
-            in_seg = (obs_idx_block >= start) & (obs_idx_block < end)
-            if in_seg.any():
-                local = obs_idx_block[in_seg] - start
-                obs[local] = obs_vals[in_seg]
-                sig[local] = sigma_vec[in_seg]
+            # obs fields
+            obs = np.full(n, np.nan)
+            sig = np.full(n, np.nan)
+            iso = np.zeros(n, dtype="i4")
+
+            sel = (obs_idx_block >= start) & (obs_idx_block < end)
+            if sel.any():
+                local = obs_idx_block[sel] - start
+                obs[local] = obs_vals[sel]
+                sig[local] = sigma_vec[sel]
                 iso[local] = 1
 
-            # write CSV
-            df = pd.DataFrame({
-                "idx":     np.arange(n, dtype=int),
-                "xb_mean": xb.astype(float),
-                "xa_mean": xa.astype(float),
-                "truth":   tr.astype(float),
-                "noda":    nd.astype(float),
-                "obs":     obs,
-                "sigma":   sig,
-                "is_obs":  iso
-            })
-            out_dir = self.nm.path
-            os.makedirs(out_dir, exist_ok=True)
-            fn = os.path.join(out_dir, f"{var_name}_{lev_tag}_cycle{k}.csv")
-            df.to_csv(fn, index=False)
+            obs_2d = obs.reshape(lat, lon)
+            sig_2d = sig.reshape(lat, lon)
+            iso_2d = iso.reshape(lat, lon)
+            idx_2d = np.arange(n, dtype="i4").reshape(lat, lon)
+
+            # write vars
+            _get_or_create_var("idx",     var_name, lev_tag, "i4")[:, :] = idx_2d
+            _get_or_create_var("xb_mean", var_name, lev_tag)[:, :] = xb
+            _get_or_create_var("xa_mean", var_name, lev_tag)[:, :] = xa
+            _get_or_create_var("truth",   var_name, lev_tag)[:, :] = tr
+            _get_or_create_var("noda",    var_name, lev_tag)[:, :] = nd
+            _get_or_create_var("obs",     var_name, lev_tag)[:, :] = obs_2d
+            _get_or_create_var("sigma",   var_name, lev_tag)[:, :] = sig_2d
+            _get_or_create_var("is_obs",  var_name, lev_tag, "i4")[:, :] = iso_2d
+
+        ds.close()
 
 
       
@@ -528,152 +561,114 @@ class ReverseSDE(ensemble_DA):
     # ===== BEGIN: generic grid dump helpers =====
 
 
-    def _var_index(self, name: str) -> int:
-        return list(self.nm.var_names).index(name)
+    def _write_unified_nc_reverseSDE(self, cycle_k):
+        """
+        HPC-compatible NetCDF writer for ReverseSDE.
+        Saves ALL variables and ALL levels for this cycle.
 
-    def _find_block_and_slice(self, var_index: int, level: int):
+        Same fields as EnKF_MC_obs:
+            idx, xb_mean, xa_mean, truth, noda, obs, sigma, is_obs
+
+        One file per cycle:
+            reverseSDE_cycle<k>.nc
         """
-        Return (block_idx, start, end, lat, lon) for (var, level) within the
-        block vectorization defined by nm.mask_cor. None if not found.
-        """
-        for b_idx, msk in enumerate(self.nm.mask_cor):
+        import numpy as np
+        import os
+        from netCDF4 import Dataset
+
+        # Load truth / noda snapshots
+        ref_nc = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
+        nod_nc = os.path.join(self.nm.free_run,   f"free_run_{cycle_k}.nc")
+        X_ref = self.nm.load_netcdf_file(ref_nc)
+        X_nod = self.nm.load_netcdf_file(nod_nc)
+
+        out_dir = self.nm.path
+        os.makedirs(out_dir, exist_ok=True)
+        nc_path = os.path.join(out_dir, f"reverseSDE_cycle{cycle_k}.nc")
+
+        # Create NC file
+        lat, lon = self.nm.gs.get_resolution(self.nm.res)
+        ds = Dataset(nc_path, "w", format="NETCDF4")
+        ds.createDimension("lat", lat)
+        ds.createDimension("lon", lon)
+        ds.cycle = int(cycle_k)
+
+        # Helper to safely create variables
+        def get_or_make(prefix, varname, lev, dtype="f8"):
+            name = f"{prefix}_{varname}_lev{lev}"
+            if name in ds.variables:
+                return ds.variables[name]
+            return ds.createVariable(name, dtype, ("lat", "lon"))
+
+        # Process through blocks exactly like EnKF
+        for block, msk in enumerate(self.nm.mask_cor):
+            XB_block = self.XB_map[block]["XB_b"]   # (n_block, Nens)
+            XA_block = self.XA_map[block]          # (n_block, Nens)
+
+            xb_mean_full = XB_block.mean(axis=1)
+            xa_mean_full = XA_block.mean(axis=1)
+
+            # Observation maps (ReverseSDE)
+            obs_map = self.obs_map[block]
+            idx_obs  = obs_map["idx_observed"]
+            y_obs    = obs_map["y"]
+            sigma    = obs_map["sigma"]
+
             offset = 0
             for (v_info, res) in msk:
-                vi, lev = v_info
-                lat, lon = res
-                n = lat * lon
-                if vi == var_index and lev == level:
-                    return b_idx, offset, offset + n, lat, lon
-                offset += n
-        return None
+                v_idx, lev = v_info
+                lat_n, lon_n = res
+                N = lat_n * lon_n
+                start, end = offset, offset + N
+                offset = end
 
-    def _load_state_flat_from_nc(self, nc_file: str, var_index: int, level: int):
-        """
-        Load a single (var,level) field from a NetCDF file and return as flat (lat*lon,).
-        Uses the repo's own loader to keep var naming consistent.
-        """
-        import numpy as np
-        try:
-            xs = self.nm.load_netcdf_file(nc_file)  # list of arrays in var_names order
-        except Exception as e:
-            print(f"[unified-csv] WARNING: failed to load {nc_file}: {e}")
-            return None
+                varname = self.nm.var_names[v_idx]
 
-        arr = xs[var_index]
-        vname = self.nm.var_names[var_index]
-        # TRG may have tracer dim (1, lev, lat, lon)
-        if "TRG" in vname and arr.ndim == 4:
-            arr = arr[0, ...]
-        # PSG is 2D (lat, lon); others are (lev, lat, lon)
-        if "PSG" in vname:
-            fld = arr
-        else:
-            fld = arr[level, :, :]
-        return np.asarray(fld, dtype=float).ravel()
+                # ==== Extract XB/XA for this variable slice ====
+                xb = xb_mean_full[start:end].reshape(lat_n, lon_n)
+                xa = xa_mean_full[start:end].reshape(lat_n, lon_n)
 
-    def _dump_unified_flat(self, cycle_k: int):
-        """
-        ONE flattened CSV per (var,level) in _UNIFIED_DUMP, with columns:
-        idx, xb_mean, xa_mean, truth, noda, obs, sigma, is_obs
-        Notes:
-        - xb_mean, xa_mean from ensemble means in the proper block slice.
-        - truth from snapshots/reference_solution_{k}.nc
-        - noda  from free_run/free_run_{k}.nc
-        - obs/sigma/is_obs from self.obs_map (block-local columns).
-        """
-        import os
-        import numpy as np
-        import pandas as pd
+                # ==== Truth / Noda ====
+                if "PSG" in varname:
+                    tr = X_ref[v_idx]
+                    nd = X_nod[v_idx]
+                else:
+                    tr = X_ref[v_idx][lev, :, :]
+                    nd = X_nod[v_idx][lev, :, :]
+                tr = tr.astype(float)
+                nd = nd.astype(float)
 
-        # file templates for truth / noda at cycle k
-        ref_nc  = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
-        noda_nc = os.path.join(self.nm.free_run,   f"free_run_{cycle_k}.nc")
-        # ---- Unified CSV config: which (var,level) to dump per cycle ----
-        # ---- Unified CSV dump configuration ----
-        # Dump for five primary level-1 variables (no TG0 etc.)
-        # Each tuple = (variable_name, level_index)
-        _UNIFIED_DUMP = [
-            ("TG1", 7),   # temperature at level 1
-            ("UG1", 7),   # zonal wind at level 1
-            ("VG1", 7),   # meridional wind at level 1
-            ("TRG1", 7),  # humidity traces at level 1
-            ("PSG1", 0),  # surface pressure (2-D)
-            ]
-        # add more tuples as needed
-        for vname, lev in _UNIFIED_DUMP:
-            # locate field within blocks
-            try:
-                v_idx = self._var_index(vname)
-            except ValueError:
-                print(f"[unified-csv] WARNING: var {vname} not found in nm.var_names")
-                continue
+                # ==== Obs fields ====
+                obs = np.full(N, np.nan)
+                sig = np.full(N, np.nan)
+                iso = np.zeros(N, dtype="i4")
 
-            info = self._find_block_and_slice(v_idx, lev)
-            if info is None:
-                print(f"[unified-csv] WARNING: ({vname}, lev={lev}) not present in any block")
-                continue
+                mask = (idx_obs >= start) & (idx_obs < end)
+                if mask.any():
+                    local = idx_obs[mask] - start
+                    obs[local] = y_obs[mask]
+                    sig[local] = sigma[mask]
+                    iso[local] = 1
 
-            b_idx, start, end, lat, lon = info
-            n = end - start
+                obs_2d = obs.reshape(lat_n, lon_n)
+                sig_2d = sig.reshape(lat_n, lon_n)
+                iso_2d = iso.reshape(lat_n, lon_n)
 
-            # ensure background exists
-            if b_idx >= len(self.XB_map) or "XB_b" not in self.XB_map[b_idx]:
-                print(f"[unified-csv] WARNING: missing XB for block {b_idx} ({vname}@{lev})")
-                continue
+                idx_grid = np.arange(N, dtype="i4").reshape(lat_n, lon_n)
 
-            # background mean (xb)
-            XB_block = self.XB_map[b_idx]["XB_b"]      # (n_block, Nens)
-            xb_slice = XB_block[start:end, :]          # (n, Nens)
-            xb_mean  = xb_slice.mean(axis=1)           # (n,)
+                # ==== Write everything ====
+                get_or_make("idx",     varname, lev, "i4")[:, :] = idx_grid
+                get_or_make("xb_mean", varname, lev)[:, :] = xb
+                get_or_make("xa_mean", varname, lev)[:, :] = xa
+                get_or_make("truth",   varname, lev)[:, :] = tr
+                get_or_make("noda",    varname, lev)[:, :] = nd
+                get_or_make("obs",     varname, lev)[:, :] = obs_2d
+                get_or_make("sigma",   varname, lev)[:, :] = sig_2d
+                get_or_make("is_obs",  varname, lev, "i4")[:, :] = iso_2d
 
-            # analysis mean (xa) -- available after perform_assimilation
-            if self.XA_map is not None and b_idx < len(self.XA_map):
-                XA_block = self.XA_map[b_idx]          # (n_block, Nens)
-                xa_slice = XA_block[start:end, :]      # (n, Nens)
-                xa_mean  = xa_slice.mean(axis=1)       # (n,)
-            else:
-                xa_mean  = np.full((n,), np.nan)
+        ds.close()
+        print(f"[ReverseSDE] Wrote {nc_path}")
 
-            # observations (block-local indices)
-            obs   = np.full((n,), np.nan)
-            sigma = np.full((n,), np.nan)
-            is_obs = np.zeros((n,), dtype=int)
-            if b_idx < len(self.obs_map):
-                om = self.obs_map[b_idx]
-                idx_cols = om.get("idx_observed", None)
-                y_vals   = om.get("y", None)
-                sg_vals  = om.get("sigma", None)  # <-- observation std (obs error)
-                if idx_cols is not None and y_vals is not None and sg_vals is not None and idx_cols.size > 0:
-                    mask = (idx_cols >= start) & (idx_cols < end)
-                    if mask.any():
-                        local = idx_cols[mask] - start
-                        obs[local]   = y_vals[mask]
-                        sigma[local] = sg_vals[mask]
-                        is_obs[local] = 1
-
-            # truth and NoDA from saved NetCDFs (best-effort)
-            truth = self._load_state_flat_from_nc(ref_nc,  v_idx, lev)
-            noda  = self._load_state_flat_from_nc(noda_nc, v_idx, lev)
-            if truth is None: truth = np.full((n,), np.nan)
-            if noda  is None: noda  = np.full((n,), np.nan)
-
-            # assemble table
-            df = pd.DataFrame({
-                "idx":     np.arange(n, dtype=int),
-                "xb_mean": xb_mean.astype(float),
-                "xa_mean": xa_mean.astype(float),
-                "truth":   np.asarray(truth, dtype=float),
-                "noda":    np.asarray(noda,  dtype=float),
-                "obs":     obs.astype(float),
-                "sigma":   sigma.astype(float),  # obs std from R diagonal
-                "is_obs":  is_obs.astype(int),
-            })
-
-            out_dir = os.path.join(self.nm.path)
-            os.makedirs(out_dir, exist_ok=True)
-            fn = os.path.join(out_dir, f"{vname}_lev{lev}_cycle{cycle_k}.csv")
-            df.to_csv(fn, index=False)
-            print(f"[unified-csv] {vname}@lev{lev}: wrote {fn} | N={n} obs={int(is_obs.sum())}")
 
 
     # ===== Reverse-SDE schedule pieces (mirrors the original formulation) =====
@@ -1098,7 +1093,7 @@ class ReverseSDE(ensemble_DA):
                 # --- end diagnostics ---
 
                 # AFTER (canonical form)
-                drift = -( f * xt + (g ** 2) * prior_term - like_tau )
+                drift = -( f * xt + (g ** 2) * prior_term - (g ** 2) * like_tau )
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
 
@@ -1158,8 +1153,9 @@ class ReverseSDE(ensemble_DA):
                 XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
         self.map_vector_states()
-        # >>> write one unified CSV per requested field, now that analysis exists
-        self._dump_unified_flat(cycle_k=getattr(self, "current_cycle_k", 0))
+        # >>> write one unified netcdf per requested field, now that analysis exists
+        self._write_unified_nc_reverseSDE(cycle_k=self.current_cycle_k)
+
 
 
 
