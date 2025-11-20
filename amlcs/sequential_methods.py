@@ -546,15 +546,24 @@ class ReverseSDE(ensemble_DA):
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025,
                  nonlinear_obs: bool = False,
+                 normalize: bool = False,
+                 drift_type: str = "old",
+                 enable_early_stopping: bool = True,
+                 score_clip: float = None,
                  rng_seed: int = 42):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
         self.eps_alpha = float(eps_alpha)
         self.scalefact = float(scalefact)
         self.eps_beta = float(eps_beta)
-        self.rng = np.random.RandomState(int(rng_seed))
+        self.nonlinear_obs = bool(nonlinear_obs)
+        self.normalize = bool(normalize)
+        self.drift_type = drift_type
+        self.enable_early_stopping = bool(enable_early_stopping)
+        self.score_clip = float(score_clip) if score_clip is not None else None
+        self.rng_seed = int(rng_seed)
+        self.rng = np.random.RandomState(self.rng_seed)
         self._cycle_idx = 0  # incremented once per perform_assimilation() call
-        self.nonlinear_obs = bool(nonlinear_obs)  # ← add this line
         # Per-block working storage
         self.XB_map = []      # background info (like other methods)
         self.obs_map = []     # per-block obs mappings prepared in prepare_analysis
@@ -593,6 +602,19 @@ class ReverseSDE(ensemble_DA):
         ds.createDimension("lat", lat)
         ds.createDimension("lon", lon)
         ds.cycle = int(cycle_k)
+
+        # --- Metadata (Run Parameters) ---
+        # Saved as global attributes for traceability
+        ds.pseudo_time_steps = int(self.p_time_step)
+        ds.eps_alpha = float(self.eps_alpha)
+        ds.scalefact = float(self.scalefact)
+        ds.eps_beta = float(self.eps_beta)
+        ds.nonlinear_obs = int(self.nonlinear_obs)
+        ds.normalize = int(self.normalize)
+        ds.drift_type = str(self.drift_type)
+        ds.enable_early_stopping = int(self.enable_early_stopping)
+        ds.score_clip = str(self.score_clip) if self.score_clip is not None else "None"
+        ds.rng_seed = int(self.rng_seed)
 
         # Helper to safely create variables
         def get_or_make(prefix, varname, lev, dtype="f8"):
@@ -1061,8 +1083,6 @@ class ReverseSDE(ensemble_DA):
             m = idx_ob.size
 
             # Convert to Torch
-            # XB is (n_block, Nens). We need (Nens, n_block) for easier indexing or just index first.
-            # Let's stick to (Nens, m) for the obs space.
             prior_ens_np = XB.T.copy() # (Nens, n_block)
             X0_obs_np = prior_ens_np[:, idx_ob] # (Nens, m)
             
@@ -1071,18 +1091,24 @@ class ReverseSDE(ensemble_DA):
             y = _torch.from_numpy(y_np.astype(_np.float32)).to(device)
             sigma = _torch.from_numpy(sigma_np.astype(_np.float32)).to(device)
 
-            # Compute stats on device
-            mean_X0 = _torch.mean(X0_obs, dim=0) # (m,)
-            std_X0 = _torch.std(X0_obs, dim=0) # (m,)
-            std_X0 = _torch.clamp(std_X0, min=1e-5) # avoid div/0
+            # --- NORMALIZE FLAG LOGIC ---
+            if self.normalize:
+                # Compute stats on device
+                mean_X0 = _torch.mean(X0_obs, dim=0) # (m,)
+                std_X0 = _torch.std(X0_obs, dim=0) # (m,)
+                std_X0 = _torch.clamp(std_X0, min=1e-5) # avoid div/0
+            else:
+                # No normalization: mean=0, std=1
+                mean_X0 = _torch.zeros(m, device=device, dtype=_torch.float32)
+                std_X0 = _torch.ones(m, device=device, dtype=_torch.float32)
             
             X0_obs_n = (X0_obs - mean_X0) / std_X0 # (Nens, m)
 
             # ============================================================
             # (B) TOGGLE: LINEAR vs NONLINEAR OBSERVATION HANDLING
             # ============================================================
-            if getattr(self, "nonlinear_obs", False):
-                # --- Nonlinear case ---
+            if self.nonlinear_obs:
+                # --- Nonlinear case (Prototype logic) ---
                 eps = 1e-8
                 sf = float(getattr(self, "scalefact", 1.0))
 
@@ -1105,7 +1131,7 @@ class ReverseSDE(ensemble_DA):
                 sigma_n_t = sigma_n
 
             else:
-                # --- Linear case (original) ---
+                # --- Linear case (Vanilla logic) ---
                 y_n = (y - mean_X0) / std_X0
                 sigma_n = sigma / std_X0
 
@@ -1121,7 +1147,7 @@ class ReverseSDE(ensemble_DA):
             t = 1.0
 
             print(f"[ReverseSDE][{label}] starting reverse-SDE (m={m}, Nens={Nens})")
-                        # >>> CHANGE D: tiny summary of which vars survived in this block
+            # Tiny summary of which vars survived in this block
             try:
                 vnames = _block_varnames_array(block_idx, n_block)
                 if vnames is not None:
@@ -1143,11 +1169,13 @@ class ReverseSDE(ensemble_DA):
                             f"ensemble std={std_val:.3e}, obs err σ={sigma_val:.3e}, normalized σ_n={sigma_n_val:.3e}")
                     except Exception as e:
                         print(f"[ReverseSDE][{label}] could not compute init stats: {e}")
+
                 alpha_t = self._cond_alpha(t)
                 sigma2_t  = self._cond_sigma_sq(t)
                 f       = self._f(t)
                 g       = self._g(t)
                 tau     = self._g_tau(t)
+                
                 # =========================================================
                 # Record SDE state (if this block has any tracked variables)
                 # =========================================================
@@ -1159,29 +1187,27 @@ class ReverseSDE(ensemble_DA):
                     
                     x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
 
-                values = _np.full((5, Nens), _np.nan, dtype=_np.float32)  # default = NaN
+                    values = _np.full((5, Nens), _np.nan, dtype=_np.float32)  # default = NaN
 
-                for vidx, obs_idx in enumerate(tracking_obs_indices):
-                    if obs_idx.size == 0:
-                        continue  # leave row as NaN
-                    sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
-                    values[vidx, :] = sub.mean(axis=1).astype(_np.float32)
+                    for vidx, obs_idx in enumerate(tracking_obs_indices):
+                        if obs_idx.size == 0:
+                            continue  # leave row as NaN
+                        sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
+                        values[vidx, :] = sub.mean(axis=1).astype(_np.float32)
 
-                    if (i % 20) == 0 or i == 1:
-                        var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
-                        for name, obs_idx, row in zip(var_list, tracking_obs_indices, values):
-                            if obs_idx.size > 0:
-                                print(f"[{label}] pstep={i:03d} {name} mean={row.mean():.4e}")
-
+                        if (i % 20) == 0 or i == 1:
+                            var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
+                            for name, obs_idx, row in zip(var_list, tracking_obs_indices, values):
+                                if obs_idx.size > 0:
+                                    print(f"[{label}] pstep={i:03d} {name} mean={row.mean():.4e}")
 
                     # Write into NetCDF only if this block had tracked obs
                     xt_state[cycle_k, block_idx, i-1, :, :] = values
 
-                # ====== rest of the SDE update is unchanged ======
+                # ====== SDE UPDATE ======
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
-                # =====================================================
-                #  TOGGLE: Linear vs Nonlinear likelihood
-                # =====================================================
+                
+                # Likelihood score
                 if self.nonlinear_obs:
                     sf = float(self.scalefact)
                     h_xt = _torch.atan(sf * xt)
@@ -1190,41 +1216,41 @@ class ReverseSDE(ensemble_DA):
                     )
                 else:
                     like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
-                # tempered likelihood score that actually enters the drift
+                
                 like_tau = tau * like_score
-
-                # likelihood contribution to the drift magnitude (ignore the separate prior pull):
-                # drift = -( f*xt + g^2 * (prior_term - like_tau) )
-                # so the likelihood "pull" part is  + g^2 * like_tau
                 pull = (g ** 2) * like_tau
 
+                # Diagnostics
                 if  DEBUG_EVERY > 0 and (i % DEBUG_EVERY == 0 or i == 1):
                     with _torch.no_grad():
                         abs_base = _torch.abs(like_score)
                         abs_tau  = _torch.abs(like_tau)
                         abs_pull = _torch.abs(pull)
-
-                        # finite mask
                         m_fin = _torch.isfinite(abs_pull) & _torch.isfinite(abs_tau) & _torch.isfinite(abs_base)
                         if m_fin.any():
                             print(
                                 f"[ReverseSDE][{label}] step={i:03d} "
                                 f"|like_score| mean={abs_base[m_fin].mean().item():.4e} max={abs_base[m_fin].max().item():.4e}  "
                                 f"|like_tau| mean={abs_tau[m_fin].mean().item():.4e} max={abs_tau[m_fin].max().item():.4e}  "
-                                #f"|pull| mean={abs_pull[m].mean().item():.4e} max={abs_pull[m].max().item():.4e}  "
-                                #f"tau={tau:.3f} g={g:.3e}"
                             )
                         else:
                             print(f"[ReverseSDE][{label}] step={i:03d} diagnostics non-finite")
-                # --- end diagnostics ---
 
-                # AFTER (canonical form)
-                # OLD DRIFT (as requested)
-                drift = -( f * xt + (g ** 2) * prior_term - like_tau ) 
-                
-                # CORRECTED DRIFT (commented out)
-                # drift = f * xt - (g ** 2) * prior_term - (g ** 2) * like_tau 
-                
+                # --- Drift Calculation (with optional clipping) ---
+                like_tau_eff = like_tau
+                if self.score_clip is not None:
+                     # Clip posterior score: -prior + like
+                     post = -prior_term + like_tau
+                     post_clipped = _torch.clamp(post, -self.score_clip, self.score_clip)
+                     like_tau_eff = post_clipped + prior_term
+
+                if self.drift_type == "corrected":
+                    # Vanilla-style: f*xt + g^2*prior - g^2*like
+                    drift = f * xt + (g ** 2) * prior_term - (g ** 2) * like_tau_eff
+                else:
+                    # Prototype-style: -(f*xt + g^2*prior - like)
+                    drift = -( f * xt + (g ** 2) * prior_term - like_tau_eff )
+
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
 
@@ -1233,19 +1259,20 @@ class ReverseSDE(ensemble_DA):
                     block_numeric_ok = False
                     break
 
-                # early stop heuristic
-                if i > 0.5 * psteps:
-                    mu = xt_next.mean(dim=0)
-                    prev_mu = xt_means_hist.mean(dim=0)
-                    if _torch.all(_torch.abs(mu - prev_mu) < tol):
+                # --- EARLY STOPPING (Prototype feature) ---
+                if self.enable_early_stopping:
+                    if i > 0.5 * psteps:
+                        mu = xt_next.mean(dim=0)
+                        prev_mu = xt_means_hist.mean(dim=0)
+                        if _torch.all(_torch.abs(mu - prev_mu) < tol):
+                            xt = xt_next
+                            break
+                        xt_means_hist[i % hist_len, :] = mu
+
+                    # hard stop near the end
+                    if i > 0.9 * psteps:
                         xt = xt_next
                         break
-                    xt_means_hist[i % hist_len, :] = mu
-
-                # hard stop near the end
-                if i > 0.9 * psteps:
-                    xt = xt_next
-                    break
             
                 xt = xt_next
                 t = max(0.0, t - dt)
@@ -1263,6 +1290,7 @@ class ReverseSDE(ensemble_DA):
             x_obs_ana = mean_X0_np + xt_np * std_X0_np       # (Nens, m)
             x_full = prior_ens_np.copy()                     # (Nens, n_block)
             x_full[:, idx_ob] = x_obs_ana
+
 
             mu = x_full.mean(axis=0)                         # (n_block,)
             sd = x_full.std(axis=0) + 1e-12
@@ -1292,18 +1320,6 @@ class ReverseSDE(ensemble_DA):
         # >>> write one unified netcdf per requested field, now that analysis exists
         self._write_unified_nc_reverseSDE(cycle_k=self.current_cycle_k)
 
-
-
-
-
-
-##########################################################################################
-##########################################################################################
-##########################################################################################
-# General factory - sequential ensemble data assimilation
-##########################################################################################
-##########################################################################################
-##########################################################################################
 class sequential_method:
       
       method_name = None;

@@ -11,8 +11,8 @@ Usage:
 # ============================================================================
 # CONFIGURATION - UPDATE THESE PATHS
 # ============================================================================
-OLD_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_nc_files_numpy"
-NEW_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_nc_files_pytorch"  # UPDATE THIS
+OLD_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100"
+NEW_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_nc_files_numpy_01_obs"  # UPDATE THIS
 
 # Comparison tolerances
 RTOL = 1e-5  # Relative tolerance
