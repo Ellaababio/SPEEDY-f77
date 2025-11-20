@@ -545,7 +545,7 @@ class ReverseSDE(ensemble_DA):
                  eps_alpha: float = 0.05,
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025,
-                 nonlinear_obs: bool = True,
+                 nonlinear_obs: bool = False,
                  rng_seed: int = 42):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
@@ -849,6 +849,12 @@ class ReverseSDE(ensemble_DA):
             self.device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
         _torch.manual_seed(getattr(self, "rng_seed", 42))
         device = self.device
+        
+        # Print GPU status
+        if device.type == "cuda":
+            print(f"[ReverseSDE] ✓ GPU ENABLED: Using {_torch.cuda.get_device_name(0)} (CUDA device {_torch.cuda.current_device()})")
+        else:
+            print(f"[ReverseSDE] ⚠ GPU NOT AVAILABLE: Using CPU only")
 
         # SDE schedule params
         psteps = int(getattr(self, "p_time_step", 200))
@@ -1050,16 +1056,27 @@ class ReverseSDE(ensemble_DA):
             # (A) PRE-NORMALIZATION (shared for both linear & nonlinear)
             # ============================================================
             idx_ob = OM["idx_observed"]
-            y = OM["y"].reshape(-1)
-            sigma = OM["sigma"].reshape(-1)
+            y_np = OM["y"].reshape(-1)
+            sigma_np = OM["sigma"].reshape(-1)
             m = idx_ob.size
 
-            prior_ens = XB.T.copy()                     # (Nens, n_block)
-            X0_obs = prior_ens[:, idx_ob]               # (Nens, m)
-            mean_X0 = _np.nanmean(X0_obs, axis=0)       # (m,)
-            std_X0  = _np.nanstd(X0_obs, axis=0)
-            std_X0  = _np.clip(std_X0, 1e-5, None)      # avoid div/0
-            X0_obs_n = (X0_obs - mean_X0) / std_X0      # (Nens, m)
+            # Convert to Torch
+            # XB is (n_block, Nens). We need (Nens, n_block) for easier indexing or just index first.
+            # Let's stick to (Nens, m) for the obs space.
+            prior_ens_np = XB.T.copy() # (Nens, n_block)
+            X0_obs_np = prior_ens_np[:, idx_ob] # (Nens, m)
+            
+            # Move to device
+            X0_obs = _torch.from_numpy(X0_obs_np.astype(_np.float32)).to(device)
+            y = _torch.from_numpy(y_np.astype(_np.float32)).to(device)
+            sigma = _torch.from_numpy(sigma_np.astype(_np.float32)).to(device)
+
+            # Compute stats on device
+            mean_X0 = _torch.mean(X0_obs, dim=0) # (m,)
+            std_X0 = _torch.std(X0_obs, dim=0) # (m,)
+            std_X0 = _torch.clamp(std_X0, min=1e-5) # avoid div/0
+            
+            X0_obs_n = (X0_obs - mean_X0) / std_X0 # (Nens, m)
 
             # ============================================================
             # (B) TOGGLE: LINEAR vs NONLINEAR OBSERVATION HANDLING
@@ -1070,31 +1087,31 @@ class ReverseSDE(ensemble_DA):
                 sf = float(getattr(self, "scalefact", 1.0))
 
                 # Clamp observations before applying tan() to avoid Inf
-                y_clamped = _np.clip(y, -1.55, 1.55)
-                tan_y = _np.tan(y_clamped)
+                y_clamped = _torch.clamp(y, -1.55, 1.55)
+                tan_y = _torch.tan(y_clamped)
 
                 # Nonlinear normalization following Rev_SDE.normalize()
-                y_n = _np.arctan(((tan_y / sf - mean_X0) / std_X0) * sf)
+                # Note: operations are now pure Torch
+                y_n = _torch.atan(((tan_y / sf - mean_X0) / std_X0) * sf)
 
-                sigma_eff = sigma.copy()
-                sigma_eff = _np.where(_np.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
+                sigma_eff = sigma.clone()
+                # Use torch.where for conditional logic
+                sigma_eff = _torch.where(_torch.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
                 sigma_n = sigma_eff / (0.01 * std_X0)
 
                 # Nonlinear ensemble normalization (same transform)
-                X0_obs_n_t = _torch.from_numpy(
-                    _np.arctan(sf * X0_obs_n).astype(_np.float32)
-                ).to(device)
-                y_n_t = _torch.from_numpy(y_n.astype(_np.float32)).to(device)
-                sigma_n_t = _torch.from_numpy(sigma_n.astype(_np.float32)).to(device)
+                X0_obs_n_t = _torch.atan(sf * X0_obs_n)
+                y_n_t = y_n
+                sigma_n_t = sigma_n
 
             else:
                 # --- Linear case (original) ---
-                y_n = ((y - mean_X0) / std_X0).reshape(-1)
-                sigma_n = (sigma / std_X0).reshape(-1)
+                y_n = (y - mean_X0) / std_X0
+                sigma_n = sigma / std_X0
 
-                X0_obs_n_t = _torch.from_numpy(X0_obs_n.astype(_np.float32)).to(device)
-                y_n_t = _torch.from_numpy(y_n.astype(_np.float32)).to(device)
-                sigma_n_t = _torch.from_numpy(sigma_n.astype(_np.float32)).to(device)
+                X0_obs_n_t = X0_obs_n
+                y_n_t = y_n
+                sigma_n_t = sigma_n
 
             # ============================================================
             # (C) INITIALIZE REVERSE SDE STATE (common)
@@ -1135,8 +1152,12 @@ class ReverseSDE(ensemble_DA):
                 # Record SDE state (if this block has any tracked variables)
                 # =========================================================
                 if do_track:
+                    # Convert to CPU NumPy for tracking/writing
                     xt_np = xt.detach().cpu().numpy()                  # (Nens, m)
-                    x_obs_step = mean_X0[None, :] + std_X0[None, :] * xt_np   # (Nens, m)
+                    mean_X0_np = mean_X0.detach().cpu().numpy()
+                    std_X0_np = std_X0.detach().cpu().numpy()
+                    
+                    x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
 
                 values = _np.full((5, Nens), _np.nan, dtype=_np.float32)  # default = NaN
 
@@ -1184,12 +1205,12 @@ class ReverseSDE(ensemble_DA):
                         abs_pull = _torch.abs(pull)
 
                         # finite mask
-                        m = _torch.isfinite(abs_pull) & _torch.isfinite(abs_tau) & _torch.isfinite(abs_base)
-                        if m.any():
+                        m_fin = _torch.isfinite(abs_pull) & _torch.isfinite(abs_tau) & _torch.isfinite(abs_base)
+                        if m_fin.any():
                             print(
                                 f"[ReverseSDE][{label}] step={i:03d} "
-                                f"|like_score| mean={abs_base[m].mean().item():.4e} max={abs_base[m].max().item():.4e}  "
-                                f"|like_tau| mean={abs_tau[m].mean().item():.4e} max={abs_tau[m].max().item():.4e}  "
+                                f"|like_score| mean={abs_base[m_fin].mean().item():.4e} max={abs_base[m_fin].max().item():.4e}  "
+                                f"|like_tau| mean={abs_tau[m_fin].mean().item():.4e} max={abs_tau[m_fin].max().item():.4e}  "
                                 #f"|pull| mean={abs_pull[m].mean().item():.4e} max={abs_pull[m].max().item():.4e}  "
                                 #f"tau={tau:.3f} g={g:.3e}"
                             )
@@ -1198,8 +1219,12 @@ class ReverseSDE(ensemble_DA):
                 # --- end diagnostics ---
 
                 # AFTER (canonical form)
-                drift = -( f * xt + (g ** 2) * prior_term - like_tau ) # old
-                # drift = -( f * xt + (g ** 2) * prior_term - (g ** 2) * like_tau ) # corrected
+                # OLD DRIFT (as requested)
+                drift = -( f * xt + (g ** 2) * prior_term - like_tau ) 
+                
+                # CORRECTED DRIFT (commented out)
+                # drift = f * xt - (g ** 2) * prior_term - (g ** 2) * like_tau 
+                
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
 
@@ -1230,9 +1255,13 @@ class ReverseSDE(ensemble_DA):
                 self.XA_map.append(XA_block_fallback)
                 continue
 
+            # Convert back to NumPy for final output
             xt_np = xt.detach().cpu().numpy()                # (Nens, m)
-            x_obs_ana = mean_X0 + xt_np * std_X0             # (Nens, m)
-            x_full = prior_ens.copy()                        # (Nens, n_block)
+            mean_X0_np = mean_X0.detach().cpu().numpy()
+            std_X0_np = std_X0.detach().cpu().numpy()
+            
+            x_obs_ana = mean_X0_np + xt_np * std_X0_np       # (Nens, m)
+            x_full = prior_ens_np.copy()                     # (Nens, n_block)
             x_full[:, idx_ob] = x_obs_ana
 
             mu = x_full.mean(axis=0)                         # (n_block,)
@@ -1262,7 +1291,6 @@ class ReverseSDE(ensemble_DA):
         self.map_vector_states()
         # >>> write one unified netcdf per requested field, now that analysis exists
         self._write_unified_nc_reverseSDE(cycle_k=self.current_cycle_k)
-
 
 
 

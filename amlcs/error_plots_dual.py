@@ -32,9 +32,12 @@ ANCHOR = "step1"
 # Scale mode: "log", "linear", or "both"
 SCALE_MODE = "both"
 
+# Generate log plots? (Set False for absolute-only plots)
+GENERATE_LOG_PLOTS = True
+
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_nonlinear_old_drift'  
+PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_linear_pytorch'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -229,7 +232,13 @@ def run_dual_plots():
         d2.mkdir(parents=True, exist_ok=True)
         return d1  # only need one for saving
 
-    scales = ["log", "linear"] if SCALE_MODE == "both" else [SCALE_MODE]
+    # Determine scales to generate
+    if SCALE_MODE == "both":
+        scales = ["log", "linear"] if GENERATE_LOG_PLOTS else ["linear"]
+    elif SCALE_MODE == "log" and not GENERATE_LOG_PLOTS:
+        scales = ["linear"]  # Override to linear if log is disabled
+    else:
+        scales = [SCALE_MODE]
 
     # ------------------- LEVEL BY LEVEL -------------------
     for var in VARS:
