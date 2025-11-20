@@ -9,6 +9,18 @@ from netCDF4 import Dataset
 
 
 # --------------------------------------------------------
+# Units dictionary (YOUR PROVIDED UNITS)
+# --------------------------------------------------------
+UNITS = {
+    "UG1":  "m/s",
+    "VG1":  "m/s",
+    "TG1":  "K",
+    "TRG1": "g/kg",
+    "PSG1": "log(ps/p0)",
+}
+
+
+# --------------------------------------------------------
 # Robust var-name decoder
 # --------------------------------------------------------
 def decode_var_names(raw):
@@ -35,7 +47,7 @@ def main():
     # --------------------------------------------------------
     nc_path = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_tracking.nc"
 
-    outdir = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_spaghetti_plots"
+    outdir = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_spaghetti_plots_nonlinear_0.01_obs_error"
     os.makedirs(outdir, exist_ok=True)
 
     print("Opening:", nc_path)
@@ -45,9 +57,10 @@ def main():
     raw_varnames = nc["var_names"][:]
     var_names = decode_var_names(raw_varnames)
 
-    ncycles = xt.shape[0]      # probably 5 → cycles 0..4
+    ncycles = xt.shape[0]      # likely 5 → indices 0..4
     nblocks = xt.shape[1]
     psteps  = xt.shape[2]
+    # print(psteps)
     nvars   = xt.shape[3]
     nens    = xt.shape[4]
 
@@ -58,17 +71,16 @@ def main():
     # --------------------------------------------------------
     # VISUAL cycles 1–5 → internal cycles 0–4
     # --------------------------------------------------------
-    for visual_cycle in range(1, 6):   # 1,2,3,4,5
-        internal_k = visual_cycle - 1  # 0,1,2,3,4
+    for visual_cycle in range(1, 6):   # 1–5
+        internal_k = visual_cycle - 1  # 0–4
 
         print(f"\n=== Cycle {visual_cycle} (internal index {internal_k}) ===")
 
-        # safety check
         if internal_k >= ncycles:
             print(f"Internal cycle {internal_k} does not exist → skipping")
             continue
 
-        # Load internal cycle slice
+        # Load slice
         xk = xt[internal_k][:]
 
         # masked → NaN
@@ -77,7 +89,7 @@ def main():
 
         cycle_data = xk.astype(np.float64)
 
-        # Remove sentinel values
+        # remove fill values
         if FILL is not None:
             bad = (cycle_data == FILL) | (np.abs(cycle_data) > 1e30)
             cycle_data[bad] = np.nan
@@ -95,7 +107,7 @@ def main():
             print("No valid blocks → skipping cycle")
             continue
 
-        # Average across blocks
+        # average across blocks
         M = np.nanmean(cycle_data[valid_blocks, :, :, :], axis=0)
 
         # --------------------------------------------------------
@@ -103,8 +115,13 @@ def main():
         # --------------------------------------------------------
         for j, var in enumerate(var_names):
 
+            unit = UNITS.get(var, "")       # default: blank
+            unit_tag = f" ({unit})" if unit else ""
+            ylabel = f"{var} [{unit}]" if unit else var
+
             plt.figure(figsize=(10, 4))
 
+            # spaghetti = ensemble members
             for e in range(nens):
                 plt.plot(M[:, j, e], alpha=0.4)
 
@@ -116,12 +133,12 @@ def main():
                 if np.isfinite(lo) and np.isfinite(hi) and lo < hi:
                     plt.ylim(lo, hi)
 
-            plt.title(f"Cycle {visual_cycle} -- {var}")
+            plt.title(f"Cycle {visual_cycle} -- {var}{unit_tag}")
             plt.xlabel("Pseudo-time")
-            plt.ylabel(var)
+            plt.ylabel(ylabel)
             plt.tight_layout()
 
-            # use visual cycle for filenames
+            # filename uses visual cycle
             outpath = os.path.join(outdir, f"cycle{visual_cycle}_{var}.png")
             plt.savefig(outpath, dpi=150)
             plt.close()
@@ -129,7 +146,7 @@ def main():
             print("Saved:", outpath)
 
     nc.close()
-    print("\nAll spaghetti plots generated.")
+    print("\nAll spaghetti plots generated with units.")
 
 
 if __name__ == "__main__":

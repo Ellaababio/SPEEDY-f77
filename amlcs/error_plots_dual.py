@@ -34,7 +34,7 @@ SCALE_MODE = "both"
 
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_new_drift'  
+PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_nonlinear_old_drift'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================

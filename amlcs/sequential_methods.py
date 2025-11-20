@@ -545,7 +545,7 @@ class ReverseSDE(ensemble_DA):
                  eps_alpha: float = 0.05,
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025,
-                 nonlinear_obs: bool = False,
+                 nonlinear_obs: bool = True,
                  rng_seed: int = 42):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
