@@ -542,9 +542,9 @@ class ReverseSDE(ensemble_DA):
 
     def __init__(self, nm, infla, Nens,
                  pseudo_time_steps: int = 200,
-                 eps_alpha: float = 0.05,
+                 eps_alpha: float = 0.05, # keep between 0 and 1
                  scalefact: float = 1.0,
-                 eps_beta: float = 0.025,
+                 eps_beta: float = 0.025, # keep between 0 and 0.5
                  nonlinear_obs: bool = False,
                  normalize: bool = False,
                  drift_type: str = "old",
@@ -1143,6 +1143,8 @@ class ReverseSDE(ensemble_DA):
             # (C) INITIALIZE REVERSE SDE STATE (common)
             # ============================================================
             xt = _torch.randn((Nens, m), device=device, dtype=_torch.float32)
+            # Normalize initial noise (matching vanilla implementation)
+            xt = (xt - xt.mean(dim=0)) / (_torch.std(xt, dim=0) + 1e-5)
             xt_means_hist = _torch.zeros((hist_len, m), device=device, dtype=_torch.float32)
             t = 1.0
 
