@@ -126,6 +126,10 @@ class ensemble_DA:
 ##########################################################################################
 ##########################################################################################
 class EnKF_MC_obs(ensemble_DA):
+    def __init__(self, nm, infla, Nens, nonlinear_obs=True, scalefact=1.0):
+        super().__init__(nm, infla, Nens)
+        self.nonlinear_obs = bool(nonlinear_obs)
+        self.scalefact = float(scalefact)
             
     
     def prepare_background(self):
@@ -169,10 +173,59 @@ class EnKF_MC_obs(ensemble_DA):
     
     def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys):
       
-          Ds = Ys - H @ XB;
-           
-          H_spar = H.toarray();
+          # 1. Compute linear predicted observations
+          Hb_X = H @ XB
           
+          # 2. Handle Nonlinear/Normalization Logic
+          if self.nonlinear_obs:
+              sf = self.scalefact
+              
+              # Compute normalization stats from ensemble predictions
+              mu = np.mean(Hb_X, axis=1, keepdims=True)
+              sigma = np.std(Hb_X, axis=1, keepdims=True)
+              sigma = np.maximum(sigma, 1e-6) # Avoid div/0
+              
+              # Transform Observations (Ys)
+              # Assumption: Ys are already in nonlinear space (atan(x))
+              # 1. Inverse nonlinear: tan(y) / sf
+              # 2. Normalize: (val - mu) / sigma
+              # 3. Re-apply nonlinear: atan(sf * val)
+              Ys_clamped = np.clip(Ys, -1.55, 1.55)
+              Ys_linear = np.tan(Ys_clamped) / sf
+              Ys_norm = (Ys_linear - mu) / sigma
+              Ys_final = np.arctan(sf * Ys_norm)
+              
+              # Transform Predictions (Hb_X)
+              # Hb_X is linear (H@XB), so just normalize and apply nonlinear
+              Hb_X_norm = (Hb_X - mu) / sigma
+              Hb_X_final = np.arctan(sf * Hb_X_norm)
+              
+              # Calculate Innovation
+              Ds = Ys_final - Hb_X_final
+              
+              # Scale H and R (Effective Jacobian)
+              # J approx sf / sigma
+              scale_vec = (sf / sigma).flatten()
+              
+              # Scale H (dense version for EnKF)
+              H_spar = H.toarray()
+              H_spar = H_spar * scale_vec[:, None]
+              
+              # Scale R (sparse diagonal)
+              if spa.issparse(R):
+                  R_diag = R.diagonal()
+                  R_final_diag = R_diag * (scale_vec**2)
+                  R = spa.diags(R_final_diag)
+              else:
+                  # Fallback if R is dense
+                  R = R * (scale_vec[:, None]**2)
+                  
+          else:
+              # Standard Linear Case
+              Ds = Ys - Hb_X
+              H_spar = H.toarray()
+          
+          # 3. Standard EnKF Update (using potentially modified H_spar, R, Ds)
           P = spa.linalg.spsolve_triangular(Binv_sqrt, H_spar.T, lower=False);
           
           Inno = R + P.T @ P;
@@ -545,12 +598,13 @@ class ReverseSDE(ensemble_DA):
                  eps_alpha: float = 0.05, # keep between 0 and 1
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025, # keep between 0 and 0.5
-                 nonlinear_obs: bool = False,
-                 normalize: bool = False,
+                 nonlinear_obs: bool = True,
+                 normalize: bool = True,
                  drift_type: str = "old",
                  enable_early_stopping: bool = True,
                  score_clip: float = None,
-                 rng_seed: int = 42):
+                 rng_seed: int = 42,
+                 track_gridpoint_loc: tuple = (21,49)):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
         self.eps_alpha = float(eps_alpha)
@@ -562,6 +616,7 @@ class ReverseSDE(ensemble_DA):
         self.enable_early_stopping = bool(enable_early_stopping)
         self.score_clip = float(score_clip) if score_clip is not None else None
         self.rng_seed = int(rng_seed)
+        self.track_gridpoint_loc = track_gridpoint_loc
         self.rng = np.random.RandomState(self.rng_seed)
         self._cycle_idx = 0  # incremented once per perform_assimilation() call
         # Per-block working storage
@@ -1194,14 +1249,74 @@ class ReverseSDE(ensemble_DA):
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
                             continue  # leave row as NaN
-                        sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
-                        values[vidx, :] = sub.mean(axis=1).astype(_np.float32)
+                        
+                        # Check if we are tracking a specific gridpoint or the spatial mean
+                        if self.track_gridpoint_loc is not None:
+                            # Gridpoint tracking logic
+                            lat_target, lon_target = self.track_gridpoint_loc
+                            
+                            # We need to find if the target gridpoint is in this block for this variable
+                            # Re-iterate specs to find which variable we are currently processing
+                            # (vidx corresponds to specs[vidx])
+                            base_name, lev_target = specs[vidx]
+                            
+                            # Find the offset for this variable in the block
+                            # We need to reconstruct the block layout to find the specific index
+                            found_target = False
+                            current_offset = 0
+                            
+                            for (v_info, res) in self.nm.mask_cor[block_idx]:
+                                (v_idx_loop, lev_loop) = v_info
+                                lat_n, lon_n = res
+                                N = int(lat_n) * int(lon_n)
+                                vname_loop = self.nm.var_names[v_idx_loop]
+                                
+                                # Check if this chunk matches the variable we are tracking
+                                is_target_var = (vname_loop == base_name)
+                                if lev_target is not None:
+                                    is_target_var = is_target_var and (int(lev_loop) == lev_target)
+                                
+                                if is_target_var:
+                                    # This is the variable chunk. Calculate target index.
+                                    # Flattened index = lat_idx * nlon + lon_idx
+                                    target_flat_idx = lat_target * int(lon_n) + lon_target
+                                    
+                                    if target_flat_idx < N:
+                                        block_target_idx = current_offset + target_flat_idx
+                                        
+                                        # Now check if this block_target_idx is in idx_ob (the observed indices)
+                                        # idx_ob maps 0..m-1 -> block_index
+                                        # We want k such that idx_ob[k] == block_target_idx
+                                        
+                                        # Using numpy/torch to find the index
+                                        # idx_ob is numpy array from OM["idx_observed"]
+                                        matches = _np.where(idx_ob == block_target_idx)[0]
+                                        
+                                        if matches.size > 0:
+                                            # Found it!
+                                            k_idx = matches[0]
+                                            val = x_obs_step[:, k_idx] # (Nens,)
+                                            values[vidx, :] = val.astype(_np.float32)
+                                            found_target = True
+                                    
+                                current_offset += N
+                                if found_target:
+                                    break
+                            
+                            # If found_target is False, values[vidx, :] remains NaN, which is correct
+                            
+                        else:
+                            # Original spatial mean logic
+                            sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
+                            values[vidx, :] = sub.mean(axis=1).astype(_np.float32)
 
                         if (i % 20) == 0 or i == 1:
                             var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
-                            for name, obs_idx, row in zip(var_list, tracking_obs_indices, values):
-                                if obs_idx.size > 0:
-                                    print(f"[{label}] pstep={i:03d} {name} mean={row.mean():.4e}")
+                            # Only print if we actually have values (not all NaN)
+                            # Check first element to see if it's NaN
+                            if not _np.isnan(values[vidx, 0]):
+                                row = values[vidx, :]
+                                print(f"[{label}] pstep={i:03d} {var_list[vidx]} mean={row.mean():.4e}")
 
                     # Write into NetCDF only if this block had tracked obs
                     xt_state[cycle_k, block_idx, i-1, :, :] = values

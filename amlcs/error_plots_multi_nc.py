@@ -18,9 +18,10 @@ Generates:
 
 # LIST of FULL PATHS to the experiment directories you want to compare:
 EXPERIMENTS = [
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_no_norm_results_v2",
     "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_normalization_results",
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_normalization_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/linear_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/nonlinear_results"
 ]
 
 # SPEEDY resolution:
@@ -43,7 +44,7 @@ GENERATE_LOG_PLOTS = True
 
 # Output directory name (optional)
 # If None -> "multi_method_comparison"
-PLOT_DIR_NAME = '/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/norm_linear_multicomparison'
+PLOT_DIR_NAME = '/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/ENSF_vs_EnKF_lin_nonlin'
 
 # Free run directory (NoDA baseline)
 FREE_RUN_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_5/free_run"
@@ -276,6 +277,7 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
             possible_names = [
                 f"reverseSDE_cycle{cycle_k}.nc",
                 f"enkf_cycle{cycle_k}.nc",
+                f"unified_cycle{cycle_k}.nc", # Added for EnKF_MC_obs
                 f"{method.lower()}_cycle{cycle_k}.nc",
                 f"cycle{cycle_k}.nc"
             ]
