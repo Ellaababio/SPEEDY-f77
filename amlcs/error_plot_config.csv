@@ -1,2 +1,2 @@
 exp_path,resolution,M,variable,level,plot_dir_name
-t21_50_0.05_5_ReverseSDE_1_1_100,t21,5,,,old_drift_fixed_TRG_obs
+t21_50_0.05_5_ReverseSDE_1_1_100,t21,5,,,netcdf_trial_linear

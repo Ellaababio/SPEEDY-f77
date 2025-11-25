@@ -13,10 +13,10 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_normalization_results/sde_tracking.nc"
 
 # Output directory for plots
-OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_spaghetti_plots_gridpoint"
+OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_plots_linear"
 
 # Units dictionary
 UNITS = {
@@ -49,43 +49,35 @@ def decode_var_names(raw):
 
 
 # --------------------------------------------------------
-# MAIN
+# Plotting Function
 # --------------------------------------------------------
-def main():
-    os.makedirs(OUT_DIR, exist_ok=True)
+def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
+    """
+    Generates spaghetti plots for the given data.
+    
+    Args:
+        xt_data: NetCDF variable or array-like (ncycle, block, psteps, var, ens)
+        var_names: List of variable names
+        output_base_dir: Base directory for output
+        suffix: Suffix for plot titles (e.g., " (Mean)" or " (Gridpoint)")
+    """
+    ncycles = xt_data.shape[0]
+    nblocks = xt_data.shape[1]
+    psteps  = xt_data.shape[2]
+    nvars   = xt_data.shape[3]
+    nens    = xt_data.shape[4]
+    
+    FILL = getattr(xt_data, "_FillValue", None)
 
-    print("Opening:", NC_PATH)
-    try:
-        nc = Dataset(NC_PATH, "r")
-    except FileNotFoundError:
-        print(f"Error: File not found at {NC_PATH}")
-        print("Please update the NC_PATH in the CONFIGURATION section.")
-        return
-
-    xt = nc["xt_state"]        # (ncycle, block, psteps, var, ens)
-    raw_varnames = nc["var_names"][:]
-    var_names = decode_var_names(raw_varnames)
-
-    ncycles = xt.shape[0]
-    nblocks = xt.shape[1]
-    psteps  = xt.shape[2]
-    nvars   = xt.shape[3]
-    nens    = xt.shape[4]
-
+    print(f"\nProcessing data for suffix '{suffix}'...")
     print(f"Cycles={ncycles} Blocks={nblocks} psteps={psteps} vars={nvars} ens={nens}")
 
-    FILL = getattr(xt, "_FillValue", None)
-
-    # --------------------------------------------------------
-    # VISUAL cycles 1–5 → internal cycles 0–4
-    # --------------------------------------------------------
     for visual_cycle in range(1, ncycles + 1):
         internal_k = visual_cycle - 1
-
-        print(f"\n=== Cycle {visual_cycle} (internal index {internal_k}) ===")
+        print(f"  Cycle {visual_cycle}...")
 
         # Load slice
-        xk = xt[internal_k][:]
+        xk = xt_data[internal_k][:]
 
         # masked → NaN
         if isinstance(xk, np.ma.MaskedArray):
@@ -98,44 +90,37 @@ def main():
             bad = (cycle_data == FILL) | (np.abs(cycle_data) > 1e30)
             cycle_data[bad] = np.nan
 
-        # --------------------------------------------------------
         # Block filtering
-        # --------------------------------------------------------
-        # Count finite values per block to find which ones have data
-        # shape: (blocks, psteps, vars, ens) -> sum over (1,2,3) gives (blocks,)
         finite_counts = np.sum(np.isfinite(cycle_data), axis=(1, 2, 3))
-        
-        # Threshold: at least some data. 
-        # For gridpoint tracking, only specific blocks will have data.
-        # We can be lenient with the threshold to ensure we catch it.
         min_valid = 1 
         valid_blocks = np.where(finite_counts >= min_valid)[0]
 
-        print("Valid blocks:", valid_blocks.tolist())
-
         if len(valid_blocks) == 0:
-            print("No valid blocks → skipping cycle")
+            print(f"    No valid blocks for Cycle {visual_cycle} → skipping")
             continue
 
-        # Average across blocks
-        # If tracking a single gridpoint, valid_blocks should ideally be length 1 (or small)
-        # Taking the mean collapses the block dimension.
+        # Average across blocks (collapses block dimension)
         M = np.nanmean(cycle_data[valid_blocks, :, :, :], axis=0)
 
-        # --------------------------------------------------------
         # Plotting
-        # --------------------------------------------------------
         for j, var in enumerate(var_names):
-
-            unit = UNITS.get(var, "")       # default: blank
+            unit = UNITS.get(var, "")
             unit_tag = f" ({unit})" if unit else ""
             ylabel = f"{var} [{unit}]" if unit else var
 
-            plt.figure(figsize=(10, 4))
+            # Create subfolder
+            var_out_dir = os.path.join(output_base_dir, var)
+            os.makedirs(var_out_dir, exist_ok=True)
 
-            # spaghetti = ensemble members
+            # Setup figure
+            fig = plt.figure(figsize=(12, 5))
+            gs = matplotlib.gridspec.GridSpec(1, 2, width_ratios=[3, 1], wspace=0.05)
+            ax_main = fig.add_subplot(gs[0])
+            ax_pdf = fig.add_subplot(gs[1], sharey=ax_main)
+
+            # --- Main Spaghetti Plot ---
             for e in range(nens):
-                plt.plot(M[:, j, e], alpha=0.4)
+                ax_main.plot(M[:, j, e], alpha=0.4, color='tab:blue', linewidth=0.8)
 
             # robust y-limits
             clean = M[:, j, :].reshape(-1)
@@ -143,22 +128,87 @@ def main():
             if len(clean) > 20:
                 lo, hi = np.nanpercentile(clean, [1, 99])
                 if np.isfinite(lo) and np.isfinite(hi) and lo < hi:
-                    plt.ylim(lo, hi)
+                    ax_main.set_ylim(lo, hi)
 
-            plt.title(f"Cycle {visual_cycle} -- {var}{unit_tag}")
-            plt.xlabel("Pseudo-time")
-            plt.ylabel(ylabel)
+            ax_main.set_title(f"Cycle {visual_cycle} -- {var}{unit_tag}{suffix}")
+            ax_main.set_xlabel("Pseudo-time")
+            ax_main.set_ylabel(ylabel)
+            ax_main.grid(True, alpha=0.3)
+
+            # --- PDF Curves ---
+            start_data = M[0, j, :]
+            start_data = start_data[np.isfinite(start_data)]
+            
+            valid_steps = np.where(np.any(np.isfinite(M[:, j, :]), axis=1))[0]
+            if len(valid_steps) > 0:
+                last_idx = min(valid_steps[-1], 180)
+                end_data = M[last_idx, j, :]
+                end_data = end_data[np.isfinite(end_data)]
+                ax_main.axvline(x=last_idx, color='k', linestyle='--', alpha=0.5, label='End')
+            else:
+                end_data = np.array([])
+
+            from scipy.stats import gaussian_kde
+            def plot_pdf(ax, data, color, label):
+                if len(data) < 2: return
+                try:
+                    density = gaussian_kde(data)
+                    ymin, ymax = ax_main.get_ylim()
+                    y_grid = np.linspace(ymin, ymax, 100)
+                    x_density = density(y_grid)
+                    ax.plot(x_density, y_grid, color=color, label=label)
+                    ax.fill_betweenx(y_grid, 0, x_density, color=color, alpha=0.2)
+                except Exception as e:
+                    pass
+
+            plot_pdf(ax_pdf, start_data, 'tab:red', 'Start')
+            plot_pdf(ax_pdf, end_data, 'tab:green', 'End')
+            
+            ax_pdf.set_xlabel("Density")
+            plt.setp(ax_pdf.get_yticklabels(), visible=False)
+            ax_pdf.grid(True, alpha=0.3)
+            ax_pdf.legend(loc='upper right', fontsize='small')
+            
             plt.tight_layout()
-
-            # filename uses visual cycle
-            outpath = os.path.join(OUT_DIR, f"cycle{visual_cycle}_{var}.png")
+            outpath = os.path.join(var_out_dir, f"cycle{visual_cycle}_{var}.png")
             plt.savefig(outpath, dpi=150)
             plt.close()
 
-            print("Saved:", outpath)
+# --------------------------------------------------------
+# MAIN
+# --------------------------------------------------------
+def main():
+    print("Opening:", NC_PATH)
+    try:
+        nc = Dataset(NC_PATH, "r")
+    except FileNotFoundError:
+        print(f"Error: File not found at {NC_PATH}")
+        return
+
+    raw_varnames = nc["var_names"][:]
+    var_names = decode_var_names(raw_varnames)
+
+    # 1. Process Spatial Mean
+    if "xt_state_mean" in nc.variables:
+        mean_out_dir = os.path.join(OUT_DIR, "spatial_mean")
+        generate_plots(nc["xt_state_mean"], var_names, mean_out_dir, suffix=" (Mean)")
+    elif "xt_state" in nc.variables:
+        # Fallback for old files
+        print("Warning: 'xt_state_mean' not found, using 'xt_state' as mean.")
+        mean_out_dir = os.path.join(OUT_DIR, "spatial_mean")
+        generate_plots(nc["xt_state"], var_names, mean_out_dir, suffix=" (Mean)")
+    else:
+        print("Error: No mean state variable found.")
+
+    # 2. Process Gridpoint
+    if "xt_state_gridpoint" in nc.variables:
+        grid_out_dir = os.path.join(OUT_DIR, "gridpoint")
+        generate_plots(nc["xt_state_gridpoint"], var_names, grid_out_dir, suffix=" (Gridpoint)")
+    else:
+        print("Warning: 'xt_state_gridpoint' not found in NetCDF.")
 
     nc.close()
-    print("\nAll spaghetti plots generated.")
+    print("\nAll plots generated.")
 
 if __name__ == "__main__":
     main()

@@ -598,7 +598,7 @@ class ReverseSDE(ensemble_DA):
                  eps_alpha: float = 0.05, # keep between 0 and 1
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025, # keep between 0 and 0.5
-                 nonlinear_obs: bool = True,
+                 nonlinear_obs: bool = False,
                  normalize: bool = True,
                  drift_type: str = "old",
                  enable_early_stopping: bool = True,
@@ -900,8 +900,13 @@ class ReverseSDE(ensemble_DA):
             nc_init.createDimension("var", 5)
             nc_init.createDimension("ens", None)
 
-            xt_state = nc_init.createVariable(
-                "xt_state", "f4",
+            xt_state_mean = nc_init.createVariable(
+                "xt_state_mean", "f4",
+                ("cycle", "block", "psteps", "var", "ens"),
+                zlib=True
+            )
+            xt_state_gridpoint = nc_init.createVariable(
+                "xt_state_gridpoint", "f4",
                 ("cycle", "block", "psteps", "var", "ens"),
                 zlib=True
             )
@@ -914,7 +919,8 @@ class ReverseSDE(ensemble_DA):
             nc_init.close()
 
         nc = Dataset(track_file, "a")
-        xt_state = nc["xt_state"]
+        xt_state_mean = nc["xt_state_mean"]
+        xt_state_gridpoint = nc["xt_state_gridpoint"]
 
         
         OBS_INCLUDE = getattr(self, "obs_include_vars", None)
@@ -1244,13 +1250,18 @@ class ReverseSDE(ensemble_DA):
                     
                     x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
 
-                    values = _np.full((5, Nens), _np.nan, dtype=_np.float32)  # default = NaN
+                    values_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
                             continue  # leave row as NaN
                         
-                        # Check if we are tracking a specific gridpoint or the spatial mean
+                        # 1. Always track spatial mean
+                        sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
+                        values_mean[vidx, :] = sub.mean(axis=1).astype(_np.float32)
+
+                        # 2. Track gridpoint if requested
                         if self.track_gridpoint_loc is not None:
                             # Gridpoint tracking logic
                             lat_target, lon_target = self.track_gridpoint_loc
@@ -1296,30 +1307,24 @@ class ReverseSDE(ensemble_DA):
                                             # Found it!
                                             k_idx = matches[0]
                                             val = x_obs_step[:, k_idx] # (Nens,)
-                                            values[vidx, :] = val.astype(_np.float32)
+                                            values_gridpoint[vidx, :] = val.astype(_np.float32)
                                             found_target = True
                                     
                                 current_offset += N
                                 if found_target:
                                     break
                             
-                            # If found_target is False, values[vidx, :] remains NaN, which is correct
-                            
-                        else:
-                            # Original spatial mean logic
-                            sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
-                            values[vidx, :] = sub.mean(axis=1).astype(_np.float32)
-
                         if (i % 20) == 0 or i == 1:
                             var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
                             # Only print if we actually have values (not all NaN)
                             # Check first element to see if it's NaN
-                            if not _np.isnan(values[vidx, 0]):
-                                row = values[vidx, :]
+                            if not _np.isnan(values_mean[vidx, 0]):
+                                row = values_mean[vidx, :]
                                 print(f"[{label}] pstep={i:03d} {var_list[vidx]} mean={row.mean():.4e}")
 
                     # Write into NetCDF only if this block had tracked obs
-                    xt_state[cycle_k, block_idx, i-1, :, :] = values
+                    xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean
+                    xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint
 
                 # ====== SDE UPDATE ======
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
