@@ -212,13 +212,14 @@ class EnKF_MC_obs(ensemble_DA):
               H_spar = H_spar * scale_vec[:, None]
               
               # Scale R (sparse diagonal)
-              if spa.issparse(R):
-                  R_diag = R.diagonal()
-                  R_final_diag = R_diag * (scale_vec**2)
-                  R = spa.diags(R_final_diag)
-              else:
-                  # Fallback if R is dense
-                  R = R * (scale_vec[:, None]**2)
+              # R is already in arctan units (from CSV), so NO scaling needed.
+              # if spa.issparse(R):
+              #     R_diag = R.diagonal()
+              #     R_final_diag = R_diag * (scale_vec**2)
+              #     R = spa.diags(R_final_diag)
+              # else:
+              #     # Fallback if R is dense
+              #     R = R * (scale_vec[:, None]**2)
                   
           else:
               # Standard Linear Case
@@ -1196,7 +1197,7 @@ class ReverseSDE(ensemble_DA):
                 sigma_eff = sigma.clone()
                 # Use torch.where for conditional logic
                 sigma_eff = _torch.where(_torch.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
-                sigma_n = sigma_eff / (0.01 * std_X0)
+                sigma_n = sigma_eff
 
                 # Nonlinear ensemble normalization (same transform)
                 X0_obs_n_t = _torch.atan(sf * X0_obs_n)
@@ -1240,8 +1241,12 @@ class ReverseSDE(ensemble_DA):
                         std_val   = std_X0.mean().item()
                         sigma_val = sigma.mean().item()
                         sigma_n_val = sigma_n.mean().item()
+                        sigma_n_min = sigma_n.min().item()
+                        sigma_n_max = sigma_n.max().item()
+                        std_min = std_X0.min().item()
                         print(f"[ReverseSDE][{label}] init stats: "
-                            f"ensemble std={std_val:.3e}, obs err σ={sigma_val:.3e}, normalized σ_n={sigma_n_val:.3e}")
+                            f"ens_std_mean={std_val:.3e}, min_ens_std={std_min:.3e}, obs_err={sigma_val:.3e}")
+                        print(f"[ReverseSDE][{label}] sigma_n stats: mean={sigma_n_val:.3e}, min={sigma_n_min:.3e}, max={sigma_n_max:.3e}")
                     except Exception as e:
                         print(f"[ReverseSDE][{label}] could not compute init stats: {e}")
 
