@@ -45,6 +45,17 @@ def main():
     l_snap       = df_par['list_snapshots'].iloc[0].strip().split(',');
     option_mask  = int(df_par['option_mask'].iloc[0]);
     
+    # Read nonlinear settings (default to False/1.0 if missing)
+    nonlinear_obs = False
+    if 'nonlinear_obs' in df_par.columns:
+        nonlinear_obs = bool(df_par['nonlinear_obs'].iloc[0])
+        
+    scalefact = 1.0
+    if 'scalefact' in df_par.columns:
+        scalefact = float(df_par['scalefact'].iloc[0])
+        
+    print(f"Nonlinear Obs: {nonlinear_obs}, Scale Factor: {scalefact}")
+    
     list_k = [int(v) for v in l_snap];
 
     print(f'plac_obs = {obs_plc}');
@@ -97,7 +108,7 @@ def main():
     plac_obs = df_par['obs_plc'].iloc[0].strip().split(',');
     obs_plc = [int(v) for v in plac_obs];
     #print (obs_plc)
-    ob = observation(err_obs, obs_plc);
+    ob = observation(err_obs, obs_plc, nonlinear_obs=nonlinear_obs, scalefact=scalefact);
 
     
     #1.1 Numerical model
@@ -114,7 +125,7 @@ def main():
     
     
     #Setting the sequential data assimilation method
-    seq_da = sequential_method(method).get_instance(nm, infla, Nens);
+    seq_da = sequential_method(method).get_instance(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact);
     
     ob.build_observational_network(gs, nm, s=s);
     ob.build_synthetic_observations(nm, rs, M); 

@@ -18,10 +18,10 @@ Generates:
 
 # LIST of FULL PATHS to the experiment directories you want to compare:
 EXPERIMENTS = [
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_normalization_results",
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_results_v2",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_results_v2",
     "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/linear_results",
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/nonlinear_results"
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/nonlinear_results_v2"
 ]
 
 # SPEEDY resolution:
@@ -44,7 +44,7 @@ GENERATE_LOG_PLOTS = True
 
 # Output directory name (optional)
 # If None -> "multi_method_comparison"
-PLOT_DIR_NAME = '/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/ENSF_vs_EnKF_lin_nonlin'
+PLOT_DIR_NAME = '/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/ENSF_vs_EnKF_lin_nonlin_v2'
 
 # Free run directory (NoDA baseline)
 FREE_RUN_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_5/free_run"

@@ -34,9 +34,11 @@ class observation:
       
       obs_var = None;
       
-      def __init__(self,err_obs, obs_indexes):
+      def __init__(self,err_obs, obs_indexes, nonlinear_obs=False, scalefact=1.0):
           self.err_obs = err_obs;
           self.obs_var = obs_indexes;
+          self.nonlinear_obs = bool(nonlinear_obs)
+          self.scalefact = float(scalefact)
           
           
  
@@ -169,7 +171,16 @@ class observation:
                   x_data = np.array(x_data);
                   R_sqrt = R_data['Rs'];
                   m_obs = R_sqrt.size;
-                  y = H_sparse @ x_data + R_sqrt @ np.random.randn(m_obs,1);
+                  
+                  # Apply observation operator Hx
+                  Hx = H_sparse @ x_data
+                  
+                  # Apply nonlinear operator if requested
+                  if self.nonlinear_obs:
+                      Hx = np.arctan(self.scalefact * Hx)
+                  
+                  # Add noise
+                  y = Hx + R_sqrt @ np.random.randn(m_obs,1);
                   y_ma.append(y);
               
               self.y_obs.append(y_ma); 

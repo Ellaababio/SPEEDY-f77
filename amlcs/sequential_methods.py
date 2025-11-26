@@ -240,7 +240,7 @@ class EnKF_MC_obs(ensemble_DA):
           
           return XA;
     
-    # ------------------ minimal CSV writer (NetCDF truth/NoDA) ------------------
+    # ------------------ minimal writer (NetCDF truth/NoDA) ------------------
     def _write_unified_nc_block(self, block, H_block, R_block, XB_block, XA_block):
         """
         HPC-safe NetCDF writer (single .nc per cycle).
@@ -598,7 +598,7 @@ class ReverseSDE(ensemble_DA):
                  eps_alpha: float = 0.05, # keep between 0 and 1
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025, # keep between 0 and 0.5
-                 nonlinear_obs: bool = False,
+                 nonlinear_obs: bool = True,
                  normalize: bool = True,
                  drift_type: str = "old",
                  enable_early_stopping: bool = True,
@@ -910,6 +910,16 @@ class ReverseSDE(ensemble_DA):
                 ("cycle", "block", "psteps", "var", "ens"),
                 zlib=True
             )
+            xt_norm_mean = nc_init.createVariable(
+                "xt_norm_mean", "f4",
+                ("cycle", "block", "psteps", "var", "ens"),
+                zlib=True
+            )
+            xt_norm_gridpoint = nc_init.createVariable(
+                "xt_norm_gridpoint", "f4",
+                ("cycle", "block", "psteps", "var", "ens"),
+                zlib=True
+            )
 
             var_names = nc_init.createVariable("var_names", str, ("var",))
             var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
@@ -921,6 +931,8 @@ class ReverseSDE(ensemble_DA):
         nc = Dataset(track_file, "a")
         xt_state_mean = nc["xt_state_mean"]
         xt_state_gridpoint = nc["xt_state_gridpoint"]
+        xt_norm_mean = nc["xt_norm_mean"]
+        xt_norm_gridpoint = nc["xt_norm_gridpoint"]
 
         
         OBS_INCLUDE = getattr(self, "obs_include_vars", None)
@@ -1249,9 +1261,13 @@ class ReverseSDE(ensemble_DA):
                     std_X0_np = std_X0.detach().cpu().numpy()
                     
                     x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
+                    x_norm_step = xt_np # (Nens, m) - Already normalized
 
                     values_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
                     values_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    
+                    values_norm_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
@@ -1260,6 +1276,9 @@ class ReverseSDE(ensemble_DA):
                         # 1. Always track spatial mean
                         sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
                         values_mean[vidx, :] = sub.mean(axis=1).astype(_np.float32)
+                        
+                        sub_norm = x_norm_step[:, obs_idx]
+                        values_norm_mean[vidx, :] = sub_norm.mean(axis=1).astype(_np.float32)
 
                         # 2. Track gridpoint if requested
                         if self.track_gridpoint_loc is not None:
@@ -1308,6 +1327,9 @@ class ReverseSDE(ensemble_DA):
                                             k_idx = matches[0]
                                             val = x_obs_step[:, k_idx] # (Nens,)
                                             values_gridpoint[vidx, :] = val.astype(_np.float32)
+                                            
+                                            val_norm = x_norm_step[:, k_idx]
+                                            values_norm_gridpoint[vidx, :] = val_norm.astype(_np.float32)
                                             found_target = True
                                     
                                 current_offset += N
@@ -1325,6 +1347,8 @@ class ReverseSDE(ensemble_DA):
                     # Write into NetCDF only if this block had tracked obs
                     xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean
                     xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint
+                    xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean
+                    xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint
 
                 # ====== SDE UPDATE ======
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
@@ -1449,11 +1473,11 @@ class sequential_method:
       def __init__(self, method_name):
           self.method_name = method_name;
       
-      def get_instance(self, nm, infla, Nens):
-          if self.method_name=='EnKF_MC_obs': return EnKF_MC_obs(nm, infla, Nens);
+      def get_instance(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0):
+          if self.method_name=='EnKF_MC_obs': return EnKF_MC_obs(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact);
           if self.method_name=='LETKF': return LETKF(nm, infla, Nens);
           if self.method_name=='LEnKF': return LEnKF(nm, infla, Nens);
-          if self.method_name == 'ReverseSDE':return ReverseSDE(nm, infla, Nens)
+          if self.method_name == 'ReverseSDE':return ReverseSDE(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact)
           
 
 

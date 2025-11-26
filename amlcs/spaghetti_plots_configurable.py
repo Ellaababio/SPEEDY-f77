@@ -13,10 +13,10 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_normalization_results/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_results_v2/sde_tracking.nc"
 
 # Output directory for plots
-OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_plots_linear"
+OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_plots_linear_v2"
 
 # Units dictionary
 UNITS = {
@@ -206,6 +206,20 @@ def main():
         generate_plots(nc["xt_state_gridpoint"], var_names, grid_out_dir, suffix=" (Gridpoint)")
     else:
         print("Warning: 'xt_state_gridpoint' not found in NetCDF.")
+
+    # 3. Process Normalized Mean
+    if "xt_norm_mean" in nc.variables:
+        norm_mean_out_dir = os.path.join(OUT_DIR, "normalized_mean")
+        generate_plots(nc["xt_norm_mean"], var_names, norm_mean_out_dir, suffix=" (Norm Mean)")
+    else:
+        print("Warning: 'xt_norm_mean' not found in NetCDF.")
+
+    # 4. Process Normalized Gridpoint
+    if "xt_norm_gridpoint" in nc.variables:
+        norm_grid_out_dir = os.path.join(OUT_DIR, "normalized_gridpoint")
+        generate_plots(nc["xt_norm_gridpoint"], var_names, norm_grid_out_dir, suffix=" (Norm Gridpoint)")
+    else:
+        print("Warning: 'xt_norm_gridpoint' not found in NetCDF.")
 
     nc.close()
     print("\nAll plots generated.")
