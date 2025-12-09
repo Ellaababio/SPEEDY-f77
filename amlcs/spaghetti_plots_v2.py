@@ -13,10 +13,10 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_results_v3/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_ps_only/sde_tracking.nc"
 
 # Output directory for plots
-OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/sde_plots_nonlinear_v3"
+OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_ps_only/sde_plots"
 
 # Units dictionary
 UNITS = {

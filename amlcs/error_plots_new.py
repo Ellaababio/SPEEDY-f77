@@ -46,16 +46,23 @@ def compute_l2_error(state, truth):
     return np.sqrt(np.mean(diff**2))
 
 
-def process_experiment(exp_path, variables, levels, M, plot_dir_name):
+def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir=None):
     """Process a single experiment and generate plots."""
     
     print(f"Processing experiment: {exp_path}")
     
-    # Determine output directory
-    plots_path = exp_path / "plots" / "errors_nc"
-    if plot_dir_name and not pd.isna(plot_dir_name):
-        plots_path = plots_path / plot_dir_name
+    if output_dir and not pd.isna(output_dir):
+        # Use explicit output directory if provided
+        plots_path = Path(output_dir)
+    elif plot_dir_name and not pd.isna(plot_dir_name):
+        # Use exp_path / plot_dir_name
+        plots_path = exp_path / plot_dir_name
+    else:
+        # Default fallback: exp_path / plots / errors_nc
+        plots_path = exp_path / "plots" / "errors_nc"
+            
     plots_path.mkdir(parents=True, exist_ok=True)
+    print(f"Saving plots to: {plots_path}")
 
     # Data storage
     # Structure: data[var][lev] = {'ana': [], 'bkg': [], 'noda': []}
@@ -106,8 +113,8 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name):
         except Exception as e:
             print(f"Warning: Failed to read anchor from {nc_0}: {e}")
 
-    # Now read cycles 1 to M
-    for k in range(1, M + 1):
+    # Now read cycles 0 to M-1 (assuming 0-based indexing for cycles)
+    for k in range(0, M):
         fn1 = exp_path / f"reverseSDE_cycle{k}.nc"
         fn2 = exp_path / "linear_normalization_results" / f"reverseSDE_cycle{k}.nc"
         fn3 = exp_path / "linear_results" / f"unified_cycle{k}.nc"
@@ -167,8 +174,8 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name):
         return
 
     # Plotting
-    # Prepend 0 to cycles
-    cycles = np.array([0] + valid_cycles)
+    # Prepend 0 to cycles, and shift cycle indices by +1 so 0 is anchor, 1 is cycle0, etc.
+    cycles = np.array([0] + [c + 1 for c in valid_cycles])
     
     for var in variables:
         for lev in levels:
@@ -261,7 +268,10 @@ def main():
         M = int(row["M"])
         plot_dir_name = row["plot_dir_name"]
         
-        process_experiment(exp_path, variables, levels, M, plot_dir_name)
+        # Read optional output_dir
+        output_dir = row.get("output_dir", None)
+        
+        process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir)
 
 
 if __name__ == "__main__":
