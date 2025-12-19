@@ -13,10 +13,10 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_ps_only/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_tracking.nc"
 
 # Output directory for plots
-OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_ps_only/sde_plots"
+OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_plots"
 
 # Units dictionary
 UNITS = {
@@ -148,9 +148,25 @@ def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
             else:
                 end_data = np.array([])
 
-            from scipy.stats import gaussian_kde
-            def plot_pdf(ax, data, color, label):
+            from scipy.stats import gaussian_kde, shapiro
+            
+            def get_stats_label(data, name):
+                if len(data) < 3:
+                     return f"{name} (N/A)"
+                try:
+                    mu = np.mean(data)
+                    sigma = np.std(data)
+                    # Shapiro-Wilk test (returns statistic, p-value)
+                    _, p_val = shapiro(data)
+                    return f"{name}\nμ={mu:.2f}, σ={sigma:.2f}\nS-W p={p_val:.3f}"
+                except Exception:
+                     return f"{name} (Error)"
+
+            def plot_pdf(ax, data, color, base_label):
                 if len(data) < 2: return
+                
+                label = get_stats_label(data, base_label)
+                
                 try:
                     density = gaussian_kde(data)
                     ymin, ymax = ax_main.get_ylim()

@@ -16,14 +16,18 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_ps_only"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results_ps_only"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
 
 # Number of assimilation cycles to read (0-based indexing)
-CYCLES = list(range(5))  # [0, 1, 2, 3, 4]
+# Number of assimilation cycles to read (0-based indexing)
+CYCLES = list(range(20))
+
+# Base directory for reference solutions (Truth/NoDA)
+REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 
 # Variables to compare:
 VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
@@ -35,11 +39,11 @@ ANCHOR = "step1"
 SCALE_MODE = "linear"
 
 # Generate log plots? (Set False for absolute-only plots)
-GENERATE_LOG_PLOTS = True
+GENERATE_LOG_PLOTS = False
 
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_linear_pytorch'  
+PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_linear_ps_only'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -153,7 +157,7 @@ def _find_cycle_files(exp_path: Path, method: str):
     """
     patterns = {
         "ReverseSDE": "reverseSDE_cycle*.nc",
-        "EnKF_MC_obs": "enkf_cycle*.nc",
+        "EnKF_MC_obs": "unified_cycle*.nc",
     }
     pattern = patterns.get(method, f"{method.lower()}_cycle*.nc")
     files = sorted(exp_path.glob(pattern))
@@ -179,36 +183,39 @@ def _read_nc_field(nc_path: Path, var: str, lev: int) -> np.ndarray:
         2D array (lat, lon)
     """
     with Dataset(nc_path, 'r') as nc:
-        # Try different field prefixes
-        for prefix in ["xa_mean", "xb_mean", "truth", "noda"]:
+        # 1. Try split/prefixed fields (e.g. xa_mean_TG1_lev0)
+        for prefix in ["xa_mean", "xb_mean", "truth", "noda", "obs"]:
             field_name = f"{prefix}_{var}_lev{lev}"
             if field_name in nc.variables:
                 return nc.variables[field_name][:]
-        raise KeyError(f"Field {var}_lev{lev} not found in {nc_path}")
+        
+        # 2. Try raw variable name (common in reference files)
+        if var in nc.variables:
+            data = nc.variables[var]
+            # Handle dimensions based on rank
+            if data.ndim == 3:  # (nlev, lat, lon)
+                return data[lev, :, :]
+            elif data.ndim == 2:  # (lat, lon)
+                return data[:]
+            elif data.ndim == 4:  # (time, nlev, lat, lon)
+                return data[0, lev, :, :]
+                
+        raise KeyError(f"Field {var} (lev {lev}) not found in {nc_path}")
 
 
 def _compute_noda_series(exp_path: Path, var: str, lev: int, cycles: list) -> np.ndarray:
     """
     Compute NoDA error series from free_run snapshots.
-    
-    Args:
-        exp_path: Experiment directory
-        var: Variable name
-        lev: Level index
-        cycles: List of cycle indices
-        
-    Returns:
-        Array of L2 errors
     """
     errors = []
-    free_run_dir = exp_path / "../ENSF_gaussian_check" / exp_path.name.split("_", 5)[-1] / "reference_solution_free_run"
-    if not free_run_dir.exists():
-        # Fallback: try looking in parent for KGEN_check
-        free_run_dir = exp_path.parent.parent / "ENSF_gaussian_check" / exp_path.name / "reference_solution_free_run"
+    # Use global REFERENCE_DIR
+    ref_dir = Path(REFERENCE_DIR)
+    free_run_dir = ref_dir / "free_run"
+    truth_dir = ref_dir / "snapshots"
     
     for cycle_k in cycles:
         try:
-            truth_file = exp_path.parent.parent / "ENSF_gaussian_check" / exp_path.name / "reference_solution" / f"reference_solution_{cycle_k}.nc"
+            truth_file = truth_dir / f"reference_solution_{cycle_k}.nc"
             noda_file = free_run_dir / f"free_run_{cycle_k}.nc"
             
             truth = _read_nc_field(truth_file, var, lev)
@@ -216,8 +223,8 @@ def _compute_noda_series(exp_path: Path, var: str, lev: int, cycles: list) -> np
             
             error = _compute_l2_error(noda, truth)
             errors.append(error)
-        except (FileNotFoundError, KeyError) as e:
-            print(f"Warning: Could not compute NoDA for cycle {cycle_k}: {e}")
+        except (FileNotFoundError, KeyError):
+            # Suppress warning for excessive prints
             errors.append(np.nan)
     
     return np.array(errors)
@@ -240,23 +247,26 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
     """
     errors = []
     
+    ref_dir = Path(REFERENCE_DIR)
+    truth_dir = ref_dir / "snapshots"
+
     for cycle_k in cycles:
         try:
             # Find the cycle file
             if method == "ReverseSDE":
                 cycle_file = exp_path / f"reverseSDE_cycle{cycle_k}.nc"
             elif method == "EnKF_MC_obs":
-                cycle_file = exp_path / f"enkf_cycle{cycle_k}.nc"
+                cycle_file = exp_path / f"unified_cycle{cycle_k}.nc"
             else:
                 cycle_file = exp_path / f"{method.lower()}_cycle{cycle_k}.nc"
             
             if not cycle_file.exists():
-                print(f"Warning: {cycle_file} not found")
+                # print(f"Warning: {cycle_file} not found") # Suppress
                 errors.append(np.nan)
                 continue
             
             # Read truth
-            truth_file = exp_path.parent.parent / "ENSF_gaussian_check" / exp_path.name / "reference_solution" / f"reference_solution_{cycle_k}.nc"
+            truth_file = truth_dir / f"reference_solution_{cycle_k}.nc"
             truth = _read_nc_field(truth_file, var, lev)
             
             # Read analysis/background field
@@ -268,7 +278,7 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
             errors.append(error)
             
         except (FileNotFoundError, KeyError) as e:
-            print(f"Warning: Error computing {field_type} for cycle {cycle_k}: {e}")
+            # print(f"Warning: Error computing {field_type} for cycle {cycle_k}: {e}") # Suppress
             errors.append(np.nan)
     
     return np.array(errors)
@@ -377,12 +387,46 @@ def _plot_curves(xs, curves, title, out_path, scale, method1_info, method2_info)
     plt.close()
 
 
+
 def _levels_for_var(var):
     if "PSG" in var:
         return [0]
     if var.startswith("TRG"):
         return list(range(2, 8))
     return list(range(8))
+
+
+def _get_available_vars(exp_path: Path, method: str, candidates: list) -> set:
+    """
+    Check which of the candidate variables exist in the first available cycle file.
+    """
+    files = _find_cycle_files(exp_path, method)
+    if not files:
+        print(f"Warning: No cycle files found in {exp_path}")
+        return set()
+    
+    # Check first file
+    found = set()
+    try:
+        with Dataset(files[0], 'r') as nc:
+            keys = set(nc.variables.keys())
+            for var in candidates:
+                # Check presence of first level for this var
+                levels = _levels_for_var(var)
+                if not levels:
+                    continue
+                first_lev = levels[0]
+                
+                # Look for standard prefixes
+                for prefix in ["xa_mean", "xb_mean", "truth", "noda"]:
+                    if f"{prefix}_{var}_lev{first_lev}" in keys:
+                        found.add(var)
+                        break
+    except Exception as e:
+        print(f"Warning: Could not check variables in {files[0]}: {e}")
+        return set()
+        
+    return found
 
 ###############################################################################
 # --------------------------- Main Work ---------------------------------------
@@ -404,6 +448,22 @@ def run_dual_plots():
 
     method1 = exp1_info['method']
     method2 = exp2_info['method']
+
+    # Filter variables based on existence in files
+    print("Checking available variables...")
+    vars1 = _get_available_vars(exp1, method1, VARS)
+    vars2 = _get_available_vars(exp2, method2, VARS)
+    
+    common_vars = vars1.intersection(vars2)
+    missing = set(VARS) - common_vars
+    if missing:
+        print(f"Skipping missing variables: {missing}")
+        
+    active_vars = [v for v in VARS if v in common_vars]
+    
+    if not active_vars:
+        print("Error: No common variables found between experiments!")
+        return
 
     out_name = PLOT_DIR_NAME or f"{method1}_vs_{method2}"
 
@@ -441,7 +501,7 @@ def run_dual_plots():
         scales = [SCALE_MODE]
 
     # ------------------- LEVEL BY LEVEL -------------------
-    for var in VARS:
+    for var in active_vars:
         lvls = _levels_for_var(var)
 
         for lvl in lvls:
@@ -469,7 +529,7 @@ def run_dual_plots():
                 _plot_curves(xs, curves, title, out_file, scale, exp1_info, exp2_info)
 
     # ------------------- LEVEL-AVERAGED -------------------
-    for var in VARS:
+    for var in active_vars:
         lvls = _levels_for_var(var)
         
         print(f"Processing {var} (level-averaged)...")

@@ -18,10 +18,10 @@ Generates:
 
 # LIST of FULL PATHS to the experiment directories you want to compare:
 EXPERIMENTS = [
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/linear_results_v2",
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/nonlinear_results_v3",
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/linear_results",
-    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_EnKF_MC_obs_1_1_100/nonlinear_results_v3"
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/nonlinear_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs/linear_results",
+    "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs/nonlinear_results"
 ]
 
 # SPEEDY resolution:
@@ -44,10 +44,10 @@ GENERATE_LOG_PLOTS = True
 
 # Output directory name (optional)
 # If None -> "multi_method_comparison"
-PLOT_DIR_NAME = '/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_5_ReverseSDE_1_1_100/ENSF_vs_EnKF_lin_nonlin_v3'
+PLOT_DIR_NAME = '/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/EnKF_MC_obs_vs_ReverseSDE'
 
 # Free run directory (NoDA baseline)
-FREE_RUN_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_5/free_run"
+FREE_RUN_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20/free_run"
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -108,6 +108,20 @@ def _parse_experiment_path(exp_path: Path) -> dict:
             metadata_hints.append("normalization")
         elif "no_norm" in subdir.lower() or "unnorm" in subdir.lower():
             metadata_hints.append("no normalization")
+            
+    # Check for psteps in the full path (parents)
+    # The new experiments are in subdirectories like .../psteps_500/...
+    for part in exp_path.parts:
+        if "psteps" in part:
+            # Extract number if possible, e.g. psteps_500 -> 500
+            if "_" in part:
+                try:
+                    val = part.split("_")[-1]
+                    metadata_hints.append(f"psteps={val}")
+                except:
+                    metadata_hints.append(part)
+            else:
+                 metadata_hints.append(part)
 
     # Extract method name from base directory name
     # If exp_path is a subdir like '.../runs/EXP_NAME/results', go up to EXP_NAME
