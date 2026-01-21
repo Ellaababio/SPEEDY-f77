@@ -603,9 +603,10 @@ class ReverseSDE(ensemble_DA):
                  normalize: bool = True,
                  drift_type: str = "old",
                  enable_early_stopping: bool = True,
-                 score_clip: float = None,
+                 score_clip: float = 10000.0,
+                 state_clip: float = 20.0,
                  rng_seed: int = 42,
-                 track_gridpoint_loc: tuple = (21,49)):
+                 track_gridpoint_loc: tuple = (27,32)):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
         self.eps_alpha = float(eps_alpha)
@@ -615,7 +616,9 @@ class ReverseSDE(ensemble_DA):
         self.normalize = bool(normalize)
         self.drift_type = drift_type
         self.enable_early_stopping = bool(enable_early_stopping)
+        self.enable_early_stopping = bool(enable_early_stopping)
         self.score_clip = float(score_clip) if score_clip is not None else None
+        self.state_clip = float(state_clip) if state_clip is not None else None
         self.rng_seed = int(rng_seed)
         self.track_gridpoint_loc = track_gridpoint_loc
         self.rng = np.random.RandomState(self.rng_seed)
@@ -638,9 +641,6 @@ class ReverseSDE(ensemble_DA):
         One file per cycle:
             reverseSDE_cycle<k>.nc
         """
-        import numpy as np
-        import os
-        from netCDF4 import Dataset
 
         # Load truth / noda snapshots
         ref_nc = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
@@ -669,7 +669,9 @@ class ReverseSDE(ensemble_DA):
         ds.normalize = int(self.normalize)
         ds.drift_type = str(self.drift_type)
         ds.enable_early_stopping = int(self.enable_early_stopping)
+        ds.enable_early_stopping = int(self.enable_early_stopping)
         ds.score_clip = str(self.score_clip) if self.score_clip is not None else "None"
+        ds.state_clip = str(self.state_clip) if self.state_clip is not None else "None"
         ds.rng_seed = int(self.rng_seed)
 
         # Helper to safely create variables
@@ -921,6 +923,16 @@ class ReverseSDE(ensemble_DA):
                 ("cycle", "block", "psteps", "var", "ens"),
                 zlib=True
             )
+            xt_force_prior_gridpoint = nc_init.createVariable(
+                "xt_force_prior_gridpoint", "f4",
+                ("cycle", "block", "psteps", "var", "ens"),
+                zlib=True
+            )
+            xt_force_like_gridpoint = nc_init.createVariable(
+                "xt_force_like_gridpoint", "f4",
+                ("cycle", "block", "psteps", "var", "ens"),
+                zlib=True
+            )
 
             var_names = nc_init.createVariable("var_names", str, ("var",))
             var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
@@ -933,7 +945,15 @@ class ReverseSDE(ensemble_DA):
         xt_state_mean = nc["xt_state_mean"]
         xt_state_gridpoint = nc["xt_state_gridpoint"]
         xt_norm_mean = nc["xt_norm_mean"]
+        xt_norm_mean = nc["xt_norm_mean"]
         xt_norm_gridpoint = nc["xt_norm_gridpoint"]
+        # Safe loading for existing files that might lack new vars
+        if "xt_force_prior_gridpoint" in nc.variables:
+            xt_force_prior_gridpoint = nc["xt_force_prior_gridpoint"]
+            xt_force_like_gridpoint = nc["xt_force_like_gridpoint"]
+        else:
+            xt_force_prior_gridpoint = None
+            xt_force_like_gridpoint = None
 
         
         OBS_INCLUDE = getattr(self, "obs_include_vars", None)
@@ -1273,6 +1293,9 @@ class ReverseSDE(ensemble_DA):
                     
                     values_norm_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
                     values_norm_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    
+                    values_force_prior_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_force_like_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
@@ -1341,6 +1364,8 @@ class ReverseSDE(ensemble_DA):
                                 if found_target:
                                     break
                             
+
+                            
                         if (i % 20) == 0 or i == 1:
                             var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
                             # Only print if we actually have values (not all NaN)
@@ -1370,6 +1395,50 @@ class ReverseSDE(ensemble_DA):
                 
                 like_tau = tau * like_score
                 pull = (g ** 2) * like_tau
+
+                # --- LATE TRACKING (Gridpoint Forces) ---
+                if do_track and self.track_gridpoint_loc is not None:
+                     # We reuse the found_target logic or just re-run it?
+                     # Re-running efficiently:
+                     # We already computed everything? No, we need to extract from prior_term / like_tau
+                     # Let's do a quick pass similar to above.
+                     prior_np = prior_term.detach().cpu().numpy()
+                     like_np  = like_tau.detach().cpu().numpy()
+                     
+                     for vidx, obs_idx in enumerate(tracking_obs_indices):
+                         # Copy-paste the locator logic or make it a helper?
+                         # Inline for safety
+                         lat_target, lon_target = self.track_gridpoint_loc
+                         base_name, lev_target = specs[vidx]
+                         
+                         # Find offset
+                         found_target = False
+                         current_offset = 0
+                         for (v_info, res) in self.nm.mask_cor[block_idx]:
+                                (v_idx_loop, lev_loop) = v_info
+                                lat_n, lon_n = res
+                                N = int(lat_n) * int(lon_n)
+                                vname_loop = self.nm.var_names[v_idx_loop]
+                                is_target_var = (vname_loop == base_name)
+                                if lev_target is not None:
+                                    is_target_var = is_target_var and (int(lev_loop) == lev_target)
+                                if is_target_var:
+                                    target_flat_idx = lat_target * int(lon_n) + lon_target
+                                    if target_flat_idx < N:
+                                        block_target_idx = current_offset + target_flat_idx
+                                        # Map to obs space
+                                        matches = _np.where(idx_ob == block_target_idx)[0]
+                                        if matches.size > 0:
+                                            k_idx = matches[0]
+                                            values_force_prior_gridpoint[vidx, :] = prior_np[:, k_idx]
+                                            values_force_like_gridpoint[vidx, :]  = like_np[:, k_idx]
+                                            found_target = True
+                                current_offset += N
+                                if found_target: break
+                     
+                     if xt_force_prior_gridpoint is not None:
+                         xt_force_prior_gridpoint[cycle_k, block_idx, i-1, :, :] = values_force_prior_gridpoint
+                         xt_force_like_gridpoint[cycle_k, block_idx, i-1, :, :] = values_force_like_gridpoint
 
                 # Diagnostics
                 if  DEBUG_EVERY > 0 and (i % DEBUG_EVERY == 0 or i == 1):
@@ -1404,6 +1473,19 @@ class ReverseSDE(ensemble_DA):
 
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
+
+                # --- 4. SAFETY CLAMP ---
+                if self.state_clip is not None:
+                    # Check if anything is out of bounds before clamping (for warning)
+                    with _torch.no_grad():
+                        outliers = _torch.abs(xt_next) > self.state_clip
+                        if outliers.any():
+                             # Rate limit warnings: only on step 50, 100, etc? Or just once per block?
+                             # Let's just print max value if it's huge
+                             max_val = xt_next.abs().max().item()
+                             if max_val > self.state_clip * 1.5: # massive spike
+                                 print(f"[ReverseSDE][{label}] step={i} CLAMPING: state hit {max_val:.1f} > {self.state_clip}")
+                    xt_next = _torch.clamp(xt_next, -self.state_clip, self.state_clip)
 
                 if not _torch.isfinite(xt_next).all():
                     print(f"[ReverseSDE][{label}] State became non-finite at step {i}. Using fallback for this block.")

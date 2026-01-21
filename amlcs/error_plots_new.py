@@ -136,7 +136,10 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                 for var in variables:
                     for lev in levels:
                         if "PSG" in var and lev > 0: continue
-                        if "TRG" in var and lev < 2: continue
+                        if "TRG" in var and lev < 2: 
+                             # print(f"Skipping {var} at level {lev} (Stratosphere)")
+                             continue
+                        
                         
                         lev_tag = f"lev{lev}"
                         def read_var(prefix):

@@ -13,10 +13,10 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/sde_tracking.nc"
 
 # Output directory for plots
-OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_plots"
+OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_plots_ps_split"
 
 # Units dictionary
 UNITS = {
@@ -51,7 +51,7 @@ def decode_var_names(raw):
 # --------------------------------------------------------
 # Plotting Function
 # --------------------------------------------------------
-def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
+def generate_plots(xt_data, var_names, output_base_dir, suffix="", filename_suffix="", time_slice=None, target_vars=None):
     """
     Generates spaghetti plots for the given data.
     
@@ -60,6 +60,9 @@ def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
         var_names: List of variable names
         output_base_dir: Base directory for output
         suffix: Suffix for plot titles (e.g., " (Mean)" or " (Gridpoint)")
+        filename_suffix: Suffix for creating unique filenames
+        time_slice: Slice object for time dimension
+        target_vars: List of variables to plot (None for all)
     """
     ncycles = xt_data.shape[0]
     nblocks = xt_data.shape[1]
@@ -85,6 +88,11 @@ def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
 
         cycle_data = xk.astype(np.float64)
 
+        # Time slicing
+        if time_slice is not None:
+            # cycle_data shape is (blocks, psteps, vars, ens)
+            cycle_data = cycle_data[:, time_slice, :, :]
+
         # remove fill values
         if FILL is not None:
             bad = (cycle_data == FILL) | (np.abs(cycle_data) > 1e30)
@@ -103,7 +111,12 @@ def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
         M = np.nanmean(cycle_data[valid_blocks, :, :, :], axis=0)
 
         # Plotting
-        for j, var in enumerate(var_names):
+        target_indices = range(len(var_names))
+        if target_vars is not None:
+             target_indices = [i for i, v in enumerate(var_names) if v in target_vars]
+
+        for j in target_indices:
+            var = var_names[j]
             unit = UNITS.get(var, "")
             unit_tag = f" ({unit})" if unit else ""
             ylabel = f"{var} [{unit}]" if unit else var
@@ -141,7 +154,7 @@ def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
             
             valid_steps = np.where(np.any(np.isfinite(M[:, j, :]), axis=1))[0]
             if len(valid_steps) > 0:
-                last_idx = min(valid_steps[-1], 180)
+                last_idx = min(valid_steps[-1], M.shape[0] - 1)
                 end_data = M[last_idx, j, :]
                 end_data = end_data[np.isfinite(end_data)]
                 ax_main.axvline(x=last_idx, color='k', linestyle='--', alpha=0.5, label='End')
@@ -186,7 +199,8 @@ def generate_plots(xt_data, var_names, output_base_dir, suffix=""):
             ax_pdf.legend(loc='upper right', fontsize='small')
             
             plt.tight_layout()
-            outpath = os.path.join(var_out_dir, f"cycle{visual_cycle}_{var}.png")
+            plt.tight_layout()
+            outpath = os.path.join(var_out_dir, f"cycle{visual_cycle}_{var}{filename_suffix}.png")
             plt.savefig(outpath, dpi=150)
             plt.close()
 
@@ -204,36 +218,59 @@ def main():
     raw_varnames = nc["var_names"][:]
     var_names = decode_var_names(raw_varnames)
 
+    # Define time slices and target
+    slices = [
+        (slice(0, 150), "_0-150"),
+        (slice(150, None), "_150-plus")
+    ]
+    target_vars = ["PSG1"]
+
     # 1. Process Spatial Mean
     if "xt_state_mean" in nc.variables:
         mean_out_dir = os.path.join(OUT_DIR, "spatial_mean")
-        generate_plots(nc["xt_state_mean"], var_names, mean_out_dir, suffix=" (Mean)")
+        for t_slice, f_suff in slices:
+            generate_plots(nc["xt_state_mean"], var_names, mean_out_dir, 
+                           suffix=" (Mean)", filename_suffix=f_suff, 
+                           time_slice=t_slice, target_vars=target_vars)
+
     elif "xt_state" in nc.variables:
         # Fallback for old files
         print("Warning: 'xt_state_mean' not found, using 'xt_state' as mean.")
         mean_out_dir = os.path.join(OUT_DIR, "spatial_mean")
-        generate_plots(nc["xt_state"], var_names, mean_out_dir, suffix=" (Mean)")
+        for t_slice, f_suff in slices:
+            generate_plots(nc["xt_state"], var_names, mean_out_dir, 
+                           suffix=" (Mean)", filename_suffix=f_suff, 
+                           time_slice=t_slice, target_vars=target_vars)
     else:
         print("Error: No mean state variable found.")
 
     # 2. Process Gridpoint
     if "xt_state_gridpoint" in nc.variables:
         grid_out_dir = os.path.join(OUT_DIR, "gridpoint")
-        generate_plots(nc["xt_state_gridpoint"], var_names, grid_out_dir, suffix=" (Gridpoint)")
+        for t_slice, f_suff in slices:
+            generate_plots(nc["xt_state_gridpoint"], var_names, grid_out_dir, 
+                           suffix=" (Gridpoint)", filename_suffix=f_suff, 
+                           time_slice=t_slice, target_vars=target_vars)
     else:
         print("Warning: 'xt_state_gridpoint' not found in NetCDF.")
 
     # 3. Process Normalized Mean
     if "xt_norm_mean" in nc.variables:
         norm_mean_out_dir = os.path.join(OUT_DIR, "normalized_mean")
-        generate_plots(nc["xt_norm_mean"], var_names, norm_mean_out_dir, suffix=" (Norm Mean)")
+        for t_slice, f_suff in slices:
+            generate_plots(nc["xt_norm_mean"], var_names, norm_mean_out_dir, 
+                           suffix=" (Norm Mean)", filename_suffix=f_suff, 
+                           time_slice=t_slice, target_vars=target_vars)
     else:
         print("Warning: 'xt_norm_mean' not found in NetCDF.")
 
     # 4. Process Normalized Gridpoint
     if "xt_norm_gridpoint" in nc.variables:
         norm_grid_out_dir = os.path.join(OUT_DIR, "normalized_gridpoint")
-        generate_plots(nc["xt_norm_gridpoint"], var_names, norm_grid_out_dir, suffix=" (Norm Gridpoint)")
+        for t_slice, f_suff in slices:
+            generate_plots(nc["xt_norm_gridpoint"], var_names, norm_grid_out_dir, 
+                           suffix=" (Norm Gridpoint)", filename_suffix=f_suff, 
+                           time_slice=t_slice, target_vars=target_vars)
     else:
         print("Warning: 'xt_norm_gridpoint' not found in NetCDF.")
 

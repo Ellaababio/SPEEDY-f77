@@ -18,7 +18,7 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directory (where cycle files are)
-EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results"
+EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results"
 
 # Reference Directory (where 'snapshots' and 'free_run' are)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
@@ -54,21 +54,27 @@ def _extract_cycle_num(filename):
     m = re.search(r'cycle(\d+)', filename.name)
     return int(m.group(1)) if m else -1
 
-def _read_nc_field(nc_path: Path, var: str, lev: int) -> np.ndarray:
-    """Read field from NetCDF, handling prefixes and dimensions."""
+def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.ndarray:
+    """
+    Read field from NetCDF.
+    If prefix is provided (e.g. 'xa_mean'), only looks for that specific field.
+    If prefix is None, tries raw variable name (3D/4D).
+    """
     if not nc_path.exists():
         return np.full((NLAT, NLON), np.nan)
 
     with Dataset(nc_path, 'r') as nc:
-        # 1. Try split/prefixed fields
-        for prefix in ["xa_mean", "xb_mean", "truth", "noda", "obs"]:
-            # Special case for PSG1 (lev0)
+        # 1. Specific prefix (for experiment files)
+        if prefix:
             target_lev = 0 if "PSG" in var else lev
             field_name = f"{prefix}_{var}_lev{target_lev}"
             if field_name in nc.variables:
                 return nc.variables[field_name][:]
+            
+            # Fallback: maybe it's not split? (unlikely for current schema but possible)
+            return np.full((NLAT, NLON), np.nan)
         
-        # 2. Try raw variable name (reference files)
+        # 2. Raw variable name (for reference/truth files)
         if var in nc.variables:
             data = nc.variables[var]
             if data.ndim == 3:  # (nlev, lat, lon)
@@ -78,7 +84,6 @@ def _read_nc_field(nc_path: Path, var: str, lev: int) -> np.ndarray:
             elif data.ndim == 4:  # (time, nlev, lat, lon)
                 return data[0, lev if "PSG" not in var else 0, :, :]
 
-    # Return NaNs if not found (e.g. missing Obs)
     return np.full((NLAT, NLON), np.nan)
 
 def main():
@@ -130,23 +135,20 @@ def main():
             # We don't necessarily need free_run here unless we want NoDA error
             
             # Read fields
-            xb = _read_nc_field(cycle_file, var, LEVEL_IDX)  # Background
-            xa = _read_nc_field(cycle_file, var, LEVEL_IDX)  # Analysis
-            xt = _read_nc_field(truth_file, var, LEVEL_IDX)  # Truth
+            xb = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="xb_mean")  # Background
+            xa = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="xa_mean")  # Analysis
+            xt = _read_nc_field(truth_file, var, LEVEL_IDX, prefix=None)       # Truth (raw var name)
             
-            # Ideally we'd read Obs too, but it might not be saved in the cycle file as a full field
-            # The original script looked for 'obs' column in CSV. 
-            # In cycle files, it might be 'obs_{var}_lev{lev}', or might be missing if sparse.
-            # Let's try to read it, but expect NaNs.
-            y_obs = _read_nc_field(cycle_file, var, LEVEL_IDX) # This might read 'xa_mean' if we aren't careful? 
-            # Wait, _read_nc_field checks prefixes. We need to be specific for Innovation.
+            # Custom read for Innovation (Obs)
+            # Try to read 'obs' prefix using helper, or custom fallback if naming is weird
+            obs_val = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="obs")
             
-            # Custom read for Innovation to ensure we get Obs specifically
-            obs_val = np.full((NLAT, NLON), np.nan)
-            with Dataset(cycle_file, 'r') as nc:
-                obs_name = f"obs_{var}_lev{0 if 'PSG' in var else LEVEL_IDX}"
-                if obs_name in nc.variables:
-                    obs_val = nc.variables[obs_name][:]
+            # If helper returned NaNs (because variable might be named differently or missing),
+            # we check manually only if needed. But _read_nc_field with prefix="obs" does exactly what we want:
+            # looks for obs_{var}_lev{k}. 
+            
+            # If it's pure NaN, it means obs were missing/not assimilated this cycle/loc.
+            # That's fine, difference will be NaN.
             
             # --- COMPUTE DIFFERENCES ---
             

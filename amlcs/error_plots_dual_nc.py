@@ -16,8 +16,8 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_ps_only"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results_ps_only"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_clipped"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -43,7 +43,7 @@ GENERATE_LOG_PLOTS = False
 
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_linear_ps_only'  
+PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_clipped_linear_all_vars'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -493,12 +493,20 @@ def run_dual_plots():
         return d1  # only need one for saving
 
     # Determine scales to generate
+
     if SCALE_MODE == "both":
         scales = ["log", "linear"] if GENERATE_LOG_PLOTS else ["linear"]
     elif SCALE_MODE == "log" and not GENERATE_LOG_PLOTS:
         scales = ["linear"]  # Override to linear if log is disabled
     else:
         scales = [SCALE_MODE]
+
+    print("Full output Plot Directories:")
+    for scale in scales:
+        if scale == "log":
+            print(f"  Log plots:    {root1 / out_name}")
+        else:
+            print(f"  Linear plots: {root1 / f'{out_name}_abs'}")
 
     # ------------------- LEVEL BY LEVEL -------------------
     for var in active_vars:
