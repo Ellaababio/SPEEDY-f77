@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.colors import SymLogNorm
 from matplotlib.ticker import MaxNLocator
 from matplotlib.animation import PillowWriter
 import cartopy.crs as ccrs
@@ -18,7 +19,7 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directory (where cycle files are)
-EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results"
+EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results_ps_only"
 
 # Reference Directory (where 'snapshots' and 'free_run' are)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
@@ -197,17 +198,27 @@ def main():
         for mode in ["innovation", "increment", "ana_truth"]:
             data_stack = np.array(frames[mode])
             
-            # Determine Color Limits
+            # Determine Color Limits & Normalization
             if mode == "ana_truth":
                 # Sequential (0 to max)
-                vmin = 0
                 vmax = np.nanmax(data_stack) if np.any(np.isfinite(data_stack)) else 1.0
+                vmin = 0
+                
+                # Use SymLogNorm to show small errors
+                # linthresh determines the range around zero that is linear.
+                # We want it small enough to see details, but not so small we amplify noise.
+                linthresh = vmax * 0.01 if vmax > 0 else 0.1
+                norm = SymLogNorm(linthresh=linthresh, vmin=vmin, vmax=vmax)
                 cmap = "viridis"
             else:
                 # Diverging (-max to max)
                 abs_max = np.nanmax(np.abs(data_stack)) if np.any(np.isfinite(data_stack)) else 1.0
                 vmin = -abs_max
                 vmax = abs_max
+                
+                # linthresh: values within [-linthresh, linthresh] are linear.
+                linthresh = abs_max * 0.01 if abs_max > 0 else 0.1
+                norm = SymLogNorm(linthresh=linthresh, vmin=vmin, vmax=vmax)
                 cmap = "coolwarm"
             
             # SKIP if all data is NaN (common for innovation if obs not saved)
@@ -223,7 +234,7 @@ def main():
             
             # Plot first frame
             im = ax.imshow(data_stack[0], origin='lower', extent=[0, 360, -90, 90],
-                          cmap=cmap, vmin=vmin, vmax=vmax, interpolation='nearest',
+                          cmap=cmap, norm=norm, interpolation='nearest',
                           transform=ccrs.PlateCarree())
             
             plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
