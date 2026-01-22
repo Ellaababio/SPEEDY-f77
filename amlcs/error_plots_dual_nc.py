@@ -16,8 +16,8 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results/data"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/nonlinear_results/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/nonlinear_results/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -43,7 +43,7 @@ GENERATE_LOG_PLOTS = False
 
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_linear_vs_ReverseSDE_linear'  
+PLOT_DIR_NAME = 'ENKF_MC_obs_nonlinear_vs_ReverseSDE_nonlinear'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================

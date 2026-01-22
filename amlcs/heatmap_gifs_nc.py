@@ -19,7 +19,7 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directory (where cycle files are)
-EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/data"
+EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/nonlinear_results/data"
 
 # Reference Directory (where 'snapshots' and 'free_run' are)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
