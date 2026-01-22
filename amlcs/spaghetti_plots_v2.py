@@ -13,10 +13,20 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/data/sde_tracking.nc"
 
 # Output directory for plots
-OUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_plots_ps_split"
+# Output directory base
+OUT_DIR_BASE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_plots"
+
+# Toggle splitting
+SPLIT_PLOTS = False
+
+# Variables to plot (None for all)
+TARGET_VARS = None
+
+# Construct final output directory
+OUT_DIR = OUT_DIR_BASE + ("_split" if SPLIT_PLOTS else "")
 
 # Units dictionary
 UNITS = {
@@ -219,11 +229,18 @@ def main():
     var_names = decode_var_names(raw_varnames)
 
     # Define time slices and target
-    slices = [
-        (slice(0, 150), "_0-150"),
-        (slice(150, None), "_150-plus")
-    ]
-    target_vars = ["PSG1"]
+    # Define time slices and target
+    if SPLIT_PLOTS:
+        slices = [
+            (slice(0, 150), "_0-150"),
+            (slice(150, None), "_150-plus")
+        ]
+    else:
+        slices = [
+            (slice(None), "")
+        ]
+
+    target_vars = TARGET_VARS
 
     # 1. Process Spatial Mean
     if "xt_state_mean" in nc.variables:

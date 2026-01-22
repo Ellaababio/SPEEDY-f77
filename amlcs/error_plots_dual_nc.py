@@ -16,8 +16,8 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_clipped"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -43,7 +43,7 @@ GENERATE_LOG_PLOTS = False
 
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_vs_ReverseSDE_clipped_linear_all_vars'  
+PLOT_DIR_NAME = 'ENKF_MC_obs_linear_vs_ReverseSDE_linear'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -110,8 +110,20 @@ def _parse_experiment_path(exp_path: Path) -> dict:
             metadata_hints.append("no normalization")
     
     # Extract method name from base directory name
-    base_dir = exp_path if exp_path.is_dir() and "t21" in exp_path.name else exp_path.parent
-    name = base_dir.name.rstrip("/")
+    # Extract method name from base directory name
+    run_dir = exp_path
+    # Search for the run directory (usually contains "t21")
+    if "t21" not in run_dir.name:
+        for parent in exp_path.parents:
+            if "t21" in parent.name:
+                run_dir = parent
+                break
+    
+    # Fallback to immediate parent if logic fails
+    if "t21" not in run_dir.name:
+         run_dir = exp_path if exp_path.is_dir() else exp_path.parent
+
+    name = run_dir.name.rstrip("/")
     parts = name.split("_")
     
     method = None
@@ -478,16 +490,13 @@ def run_dual_plots():
     print(f"    Color: {exp2_info['color_name']}")
     print(f"Output directory tag: {out_name}")
 
-    root1 = exp1 / "plots" / "errors"
-    root2 = exp2 / "plots" / "errors"
-
     def _ensure(scale):
         if scale == "log":
-            d1 = root1 / out_name
-            d2 = root2 / out_name
+            d1 = exp1 / out_name
+            d2 = exp2 / out_name
         else:
-            d1 = root1 / f"{out_name}_abs"
-            d2 = root2 / f"{out_name}_abs"
+            d1 = exp1 / f"{out_name}_abs"
+            d2 = exp2 / f"{out_name}_abs"
         d1.mkdir(parents=True, exist_ok=True)
         d2.mkdir(parents=True, exist_ok=True)
         return d1  # only need one for saving
@@ -504,9 +513,9 @@ def run_dual_plots():
     print("Full output Plot Directories:")
     for scale in scales:
         if scale == "log":
-            print(f"  Log plots:    {root1 / out_name}")
+            print(f"  Log plots:     {exp1 / out_name}")
         else:
-            print(f"  Linear plots: {root1 / f'{out_name}_abs'}")
+            print(f"  Linear plots:  {exp1 / f'{out_name}_abs'}")
 
     # ------------------- LEVEL BY LEVEL -------------------
     for var in active_vars:

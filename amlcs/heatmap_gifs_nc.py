@@ -19,13 +19,13 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directory (where cycle files are)
-EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results_ps_only"
+EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/data"
 
 # Reference Directory (where 'snapshots' and 'free_run' are)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 
 # Output Directory (relative to EXP_DIR by default)
-OUT_DIR_NAME = "heatmaps_nc"
+OUT_DIR_NAME = "../heatmaps_nc"
 
 # Variables to process
 VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
