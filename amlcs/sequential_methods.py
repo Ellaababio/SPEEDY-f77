@@ -1255,6 +1255,15 @@ class ReverseSDE(ensemble_DA):
 
             block_numeric_ok = True
 
+            # [USER-REQUEST] Setup for tracking pressure (PSG1, index 4) at (27,32) for cycles 5-8
+            track_pressure_data = {
+                "xt": [],
+                "prior": [],
+                "like": [],
+                "steps": []
+            }
+            do_plot_pressure = (cycle_k in [5, 6, 7, 8])
+
             for i in range(1, psteps+1):
                 if i == 1:  # only print once per block
                     try:
@@ -1439,6 +1448,26 @@ class ReverseSDE(ensemble_DA):
                      if xt_force_prior_gridpoint is not None:
                          xt_force_prior_gridpoint[cycle_k, block_idx, i-1, :, :] = values_force_prior_gridpoint
                          xt_force_like_gridpoint[cycle_k, block_idx, i-1, :, :] = values_force_like_gridpoint
+                
+                # [USER-REQUEST] Collect pressure data for plotting
+                if do_plot_pressure and do_track:
+                    # Dynamically find PSG1 index in the local specs list
+                    # (User noted index 9 globally, but locally it depends on specs definition)
+                    try:
+                        psg_idx = [s[0] for s in specs].index("PSG1")
+                    except ValueError:
+                        psg_idx = -1
+
+                    if psg_idx >= 0:
+                        v_psg = values_gridpoint[psg_idx] 
+                        if not _np.isnan(v_psg).all():
+                             prior_psg = values_force_prior_gridpoint[psg_idx]
+                             like_psg = values_force_like_gridpoint[psg_idx]
+                             
+                             track_pressure_data["xt"].append(v_psg.copy())
+                             track_pressure_data["prior"].append(prior_psg.copy())
+                             track_pressure_data["like"].append(like_psg.copy())
+                             track_pressure_data["steps"].append(i)
 
                 # Diagnostics
                 if  DEBUG_EVERY > 0 and (i % DEBUG_EVERY == 0 or i == 1):
@@ -1458,7 +1487,7 @@ class ReverseSDE(ensemble_DA):
 
                 # --- Drift Calculation (with optional clipping) ---
                 like_tau_eff = like_tau
-                if self.score_clip is not None:
+                if False and self.score_clip is not None:
                      # Clip posterior score: -prior + like
                      post = -prior_term + like_tau
                      post_clipped = _torch.clamp(post, -self.score_clip, self.score_clip)
@@ -1475,7 +1504,7 @@ class ReverseSDE(ensemble_DA):
                 xt_next = xt + dt * drift + noise
 
                 # --- 4. SAFETY CLAMP ---
-                if self.state_clip is not None:
+                if False and self.state_clip is not None:
                     # Check if anything is out of bounds before clamping (for warning)
                     with _torch.no_grad():
                         outliers = _torch.abs(xt_next) > self.state_clip
@@ -1509,6 +1538,64 @@ class ReverseSDE(ensemble_DA):
             
                 xt = xt_next
                 t = max(0.0, t - dt)
+
+            # [USER-REQUEST] Generate plot for pressure at (27,32) if data was collected
+            if do_plot_pressure and len(track_pressure_data["steps"]) > 0:
+                try:
+                    import matplotlib.pyplot as plt
+                    # Use a non-interactive backend to avoid display issues
+                    plt.switch_backend('Agg')
+                    
+                    steps = track_pressure_data["steps"]
+                    xt_arr = _np.array(track_pressure_data["xt"])     # (T, Nens)
+                    prior_arr = _np.array(track_pressure_data["prior"])
+                    like_arr = _np.array(track_pressure_data["like"])
+                    
+                    if xt_arr.ndim == 2:
+                        fig, axs = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
+                        
+                        # 1. XT
+                        xt_mean = xt_arr.mean(axis=1)
+                        xt_std = xt_arr.std(axis=1)
+                        axs[0].plot(steps, xt_mean, label='Mean XT')
+                        axs[0].fill_between(steps, xt_mean - xt_std, xt_mean + xt_std, alpha=0.3)
+                        axs[0].set_title(f"Cycle {cycle_k} PSG1 (27,32): State")
+                        axs[0].set_ylabel("XT (Normalized)")
+                        axs[0].grid(True)
+                        axs[0].legend()
+
+                        # 2. Prior
+                        prior_mean = prior_arr.mean(axis=1)
+                        prior_std = prior_arr.std(axis=1)
+                        axs[1].plot(steps, prior_mean, color='orange', label='Mean Prior')
+                        axs[1].fill_between(steps, prior_mean - prior_std, prior_mean + prior_std, color='orange', alpha=0.3)
+                        axs[1].set_title("Prior Term")
+                        axs[1].set_ylabel("Force")
+                        axs[1].grid(True)
+                        axs[1].legend()
+
+                        # 3. Likelihood
+                        like_mean = like_arr.mean(axis=1)
+                        like_std = like_arr.std(axis=1)
+                        axs[2].plot(steps, like_mean, color='green', label='Mean Likelihood')
+                        axs[2].fill_between(steps, like_mean - like_std, like_mean + like_std, color='green', alpha=0.3)
+                        axs[2].set_title("Likelihood Score")
+                        axs[2].set_ylabel("Force")
+                        axs[2].set_xlabel("Pseudo-step")
+                        axs[2].grid(True)
+                        axs[2].legend()
+
+                        # Create subfolder for plots
+                        plot_dir = os.path.join(self.nm.path, "debug_plots")
+                        os.makedirs(plot_dir, exist_ok=True)
+                        
+                        out_path = os.path.join(plot_dir, f"debug_cycle{cycle_k}_psg1_27_32.png")
+                        plt.tight_layout()
+                        plt.savefig(out_path)
+                        plt.close(fig)
+                        print(f"[ReverseSDE] Saved debug plot to {out_path}")
+                except Exception as e:
+                    print(f"[ReverseSDE] Plotting failed: {e}")
             
             # Produce XA_block (either fallback or from xt)
             if not block_numeric_ok:
