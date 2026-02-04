@@ -15,7 +15,7 @@ from netCDF4 import Dataset
 ###############################################################################
 
 # Path to the NetCDF file to inspect
-NETCDF_FILE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/linear_results_ps_only/unified_cycle0.nc"
+NETCDF_FILE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/reverseSDE_cycle0.nc"
 
 # Show sample values for small arrays?
 SHOW_SAMPLE = False

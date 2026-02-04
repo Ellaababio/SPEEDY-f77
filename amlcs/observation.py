@@ -115,7 +115,15 @@ class observation:
               for o in om:
                   var_info = o[0]
                   variable = var_info[0];
-                  err_obm = self.err_obs[variable];
+                  try:
+                      err_obm = self.err_obs[variable]
+                  except IndexError:
+                      if variable == 10:
+                          print(f"Warning: No obs error specified for WDG1 (idx {variable}). Using default 1.0 rad.")
+                          err_obm = 1.0
+                      else:
+                          print(f"Warning: No obs error specified for var idx {variable}. Using default 1.0")
+                          err_obm = 1.0
                   m = o[1];
                   I = np.arange(m_om, m_om+m);
                   Ig.extend(list(I));

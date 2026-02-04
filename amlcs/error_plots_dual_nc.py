@@ -30,7 +30,7 @@ CYCLES = list(range(20))
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 
 # Variables to compare:
-VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
+VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1", "WDG1"]
 
 # Anchor mode: "step0" or "step1"
 ANCHOR = "step1"
@@ -67,6 +67,7 @@ matplotlib.rcParams.update({"font.size": 14})
 VAR_CODES = {
     "TG0": "T_0", "UG0": "u_0", "VG0": "v_0", "TRG0": "Hq_0", "PSG0": "PS_0",
     "TG1": "T_1", "UG1": "u_1", "VG1": "v_1", "TRG1": "Hq_1", "PSG1": "PS_1",
+    "WDG1": r"\theta_1",
 }
 PS_LEVELS_MB = [30, 100, 200, 300, 500, 700, 850, 925]
 
@@ -387,7 +388,7 @@ def _plot_curves(xs, curves, title, out_path, scale, method1_info, method2_info)
     
     plt.title(title_with_colors, fontsize=12)
     plt.xlabel("Assimilation Step")
-    plt.ylabel("log(l2)" if scale == "log" else "l2")
+    plt.ylabel("log(RMSE)" if scale == "log" else "RMSE")
     
     # Remove duplicate legend entries
     handles, labels = plt.gca().get_legend_handles_labels()

@@ -17,7 +17,7 @@ NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/sde_tr
 
 # Output directory for plots
 # Output directory base
-OUT_DIR_BASE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/ps_0.003/sde_plots"
+OUT_DIR_BASE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/wg1_0.2/sde_plots"
 
 # Toggle splitting
 SPLIT_PLOTS = False
@@ -35,6 +35,7 @@ UNITS = {
     "TG1":  "K",
     "TRG1": "g/kg",
     "PSG1": "log(ps/p0)",
+    "WDG1": "rad",
 }
 
 ###############################################################################

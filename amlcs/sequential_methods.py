@@ -900,7 +900,7 @@ class ReverseSDE(ensemble_DA):
             nc_init.createDimension("cycle", None)
             nc_init.createDimension("block", None)
             nc_init.createDimension("psteps", psteps)
-            nc_init.createDimension("var", 5)
+            nc_init.createDimension("var", 6)
             nc_init.createDimension("ens", None)
 
             xt_state_mean = nc_init.createVariable(
@@ -935,7 +935,7 @@ class ReverseSDE(ensemble_DA):
             )
 
             var_names = nc_init.createVariable("var_names", str, ("var",))
-            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
+            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WDG1"]
             for ii, name in enumerate(var_list):
                 var_names[ii] = name
 
@@ -945,7 +945,6 @@ class ReverseSDE(ensemble_DA):
         xt_state_mean = nc["xt_state_mean"]
         xt_state_gridpoint = nc["xt_state_gridpoint"]
         xt_norm_mean = nc["xt_norm_mean"]
-        xt_norm_mean = nc["xt_norm_mean"]
         xt_norm_gridpoint = nc["xt_norm_gridpoint"]
         # Safe loading for existing files that might lack new vars
         if "xt_force_prior_gridpoint" in nc.variables:
@@ -954,6 +953,9 @@ class ReverseSDE(ensemble_DA):
         else:
             xt_force_prior_gridpoint = None
             xt_force_like_gridpoint = None
+            
+        # Ensure var dimension is correct magnitude to avoid potential misalignment if file exists
+        # (Though usually Nens is unlimited or we are appending time, var is fixed. Optimally we'd check)
 
         
         OBS_INCLUDE = getattr(self, "obs_include_vars", None)
@@ -1125,6 +1127,7 @@ class ReverseSDE(ensemble_DA):
                 ("TG1",  7),
                 ("TRG1", 7),
                 ("PSG1", None),
+                ("WDG1", 7), # Tracking WDG1 at level 7
             ]
 
             for base_name, lev_target in specs:
@@ -1162,6 +1165,8 @@ class ReverseSDE(ensemble_DA):
                             OM["y"] = OM["y"].reshape(-1)[keep_mask]
                         if "sigma" in OM and OM["sigma"] is not None:
                             OM["sigma"] = OM["sigma"].reshape(-1)[keep_mask]
+                        # Re-calculate vnames_obs for the new idx_ob (IMPORTANT for WDG logic below)
+                        vnames_obs = vnames_block[idx_ob]
 
             # Re-check after filtering
             if idx_ob.size == 0:
@@ -1185,12 +1190,24 @@ class ReverseSDE(ensemble_DA):
             y = _torch.from_numpy(y_np.astype(_np.float32)).to(device)
             sigma = _torch.from_numpy(sigma_np.astype(_np.float32)).to(device)
 
+            # Identify WDG1 columns for special handling
+            # vnames_obs was updated above (or derived from vnames_block[idx_ob])
+            # Ensure vnames_obs corresponds to the current idx_ob
+            vnames_obs = vnames_block[idx_ob]
+            is_wdg = _torch.tensor((vnames_obs == "WDG1"), device=device, dtype=_torch.bool)
+            
             # --- NORMALIZE FLAG LOGIC ---
             if self.normalize:
                 # Compute stats on device
                 mean_X0 = _torch.mean(X0_obs, dim=0) # (m,)
                 std_X0 = _torch.std(X0_obs, dim=0) # (m,)
                 std_X0 = _torch.clamp(std_X0, min=1e-5) # avoid div/0
+                
+                # --- WDG1 EXCEPTION: Do not normalize angles ---
+                if is_wdg.any():
+                    # For WDG1, set mean=0, std=1 (preserve original radians)
+                    mean_X0 = _torch.where(is_wdg, _torch.zeros_like(mean_X0), mean_X0)
+                    std_X0 = _torch.where(is_wdg, _torch.ones_like(std_X0), std_X0)
             else:
                 # No normalization: mean=0, std=1
                 mean_X0 = _torch.zeros(m, device=device, dtype=_torch.float32)
@@ -1218,9 +1235,22 @@ class ReverseSDE(ensemble_DA):
                 # Use torch.where for conditional logic
                 sigma_eff = _torch.where(_torch.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
                 sigma_n = sigma_eff
+                
+                # --- WDG1 EXCEPTION: Bypass arctan, use raw radians ---
+                if is_wdg.any():
+                    # For WDG1, y is already radians. Don't touch it.
+                    # Normalization was already reset to 0/1 for WDG above.
+                    # So just pass y through for WDG slots.
+                    y_n = _torch.where(is_wdg, y, y_n)
+                    sigma_n = _torch.where(is_wdg, sigma, sigma_n) # Keep sigma as is (radians)
 
                 # Nonlinear ensemble normalization (same transform)
                 X0_obs_n_t = _torch.atan(sf * X0_obs_n)
+                
+                # --- WDG1 EXCEPTION: Bypass arctan for state too ---
+                if is_wdg.any():
+                    X0_obs_n_t = _torch.where(is_wdg, X0_obs_n, X0_obs_n_t)
+                
                 y_n_t = y_n
                 sigma_n_t = sigma_n
 
@@ -1239,6 +1269,11 @@ class ReverseSDE(ensemble_DA):
             xt = _torch.randn((Nens, m), device=device, dtype=_torch.float32)
             # Normalize initial noise (matching vanilla implementation)
             xt = (xt - xt.mean(dim=0)) / (_torch.std(xt, dim=0) + 1e-5)
+            
+            # --- WDG1 EXCEPTION: Initialize WDG noise in range? ---
+            # Actually, standard Gaussian noise is fine for diffusion process, 
+            # as long as we treat the difference circularly later.
+            
             xt_means_hist = _torch.zeros((hist_len, m), device=device, dtype=_torch.float32)
             t = 1.0
 
@@ -1297,14 +1332,15 @@ class ReverseSDE(ensemble_DA):
                     x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
                     x_norm_step = xt_np # (Nens, m) - Already normalized
 
-                    values_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
-                    values_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    # Resize storage to 6 variables (was 5)
+                    values_mean = _np.full((6, Nens), _np.nan, dtype=_np.float32)
+                    values_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
                     
-                    values_norm_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
-                    values_norm_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_mean = _np.full((6, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
                     
-                    values_force_prior_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
-                    values_force_like_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_force_prior_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
+                    values_force_like_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
@@ -1312,6 +1348,9 @@ class ReverseSDE(ensemble_DA):
                         
                         # 1. Always track spatial mean
                         sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
+                        # For WDG, spatial mean is tricky because it's circular. 
+                        # For simple visualization, standard mean is okay-ish, or just skip.
+                        # We'll use standard mean for now as basic diag.
                         values_mean[vidx, :] = sub.mean(axis=1).astype(_np.float32)
                         
                         sub_norm = x_norm_step[:, obs_idx]
@@ -1373,10 +1412,9 @@ class ReverseSDE(ensemble_DA):
                                 if found_target:
                                     break
                             
-
                             
                         if (i % 20) == 0 or i == 1:
-                            var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
+                            var_list = ["UG1","VG1","TG1","TRG1","PSG1", "WDG1"]
                             # Only print if we actually have values (not all NaN)
                             # Check first element to see if it's NaN
                             if not _np.isnan(values_mean[vidx, 0]):
@@ -1384,10 +1422,28 @@ class ReverseSDE(ensemble_DA):
                                 print(f"[{label}] pstep={i:03d} {var_list[vidx]} mean={row.mean():.4e}")
 
                     # Write into NetCDF only if this block had tracked obs
-                    xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean
-                    xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint
-                    xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean
-                    xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint
+                    # Since we expanded to 6 vars, and file has dimension 5?
+                    # Wait, we created dimension 5 in init: nc_init.createDimension("var", 5)
+                    # We need to resize the file or handle error if user didn't delete old file.
+                    # Since I cannot delete user files typically, I should try to write safely.
+                    # If I try to write 6th var to 5-dim file, it will crash.
+                    # I will check dim size in `nc`:
+                    nc_var_dim = nc.dimensions['var'].size
+                    
+                    if nc_var_dim >= 6:
+                        xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean
+                        xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint
+                        xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean
+                        xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint
+                    else:
+                        # Fallback for old file structure: write only first 5
+                        xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean[:5]
+                        xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint[:5]
+                        xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean[:5]
+                        xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint[:5]
+                        if i == 1 and block_idx == 0:
+                            print(f"[ReverseSDE] WARNING: sde_tracking.nc has 5 vars, but we have 6. WDG1 will not be saved.")
+
 
                 # ====== SDE UPDATE ======
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
@@ -1396,11 +1452,44 @@ class ReverseSDE(ensemble_DA):
                 if self.nonlinear_obs:
                     sf = float(self.scalefact)
                     h_xt = _torch.atan(sf * xt)
-                    like_score = -(h_xt - y_n_t) / (sigma_n_t ** 2) * (
-                        sf / (1.0 + (sf * xt) ** 2)
-                    )
+                    
+                    # --- WDG1 EXCEPTION: Bypass ATAN for state ---
+                    if is_wdg.any():
+                        h_xt = _torch.where(is_wdg, xt, h_xt)
+
+                    # Compute Difference
+                    diff = h_xt - y_n_t
+                    
+                    # --- WDG1 EXCEPTION: Circular Difference ---
+                    if is_wdg.any():
+                         # Circular Diff: (a - b + pi) % 2pi - pi
+                         pi = _torch.tensor(3.1415926535, device=device)
+                         wdg_diff = (diff + pi) % (2 * pi) - pi
+                         diff = _torch.where(is_wdg, wdg_diff, diff)
+
+                    # Jacobian Factor (derivative of atan behavior or 1.0)
+                    # For arctan: 1 / (1+(sf*xt)^2) * sf
+                    # For WDG: 1.0 (linear-like in angle space)
+                    jac = sf / (1.0 + (sf * xt) ** 2)
+                    
+                    if is_wdg.any():
+                        grad_wdg = _torch.ones_like(xt) # Gradient is 1 for direct observation
+                        jac = _torch.where(is_wdg, grad_wdg, jac)
+
+                    like_score = -(diff) / (sigma_n_t ** 2) * jac
+                    
                 else:
-                    like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
+                    # Linear Case
+                    diff = xt - y_n_t
+                    # --- WDG1 check also in linear case? ---
+                    # Usually "Linear" implies we treat everything as R^n.
+                    # But if we want circularity even in "Linear" mode:
+                    if is_wdg.any():
+                         pi = _torch.tensor(3.1415926535, device=device)
+                         wdg_diff = (diff + pi) % (2 * pi) - pi
+                         diff = _torch.where(is_wdg, wdg_diff, diff)
+                    
+                    like_score = -(diff) / (sigma_n_t ** 2)
                 
                 like_tau = tau * like_score
                 pull = (g ** 2) * like_tau

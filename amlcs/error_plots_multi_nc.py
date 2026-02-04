@@ -31,7 +31,7 @@ RESOLUTION = "t21"
 CYCLES = list(range(5))  # [0, 1, 2, 3, 4]
 
 # Variables to compare:
-VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
+VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1", "WDG1"]
 
 # Anchor mode: "step0" or "step1"
 ANCHOR = "step1"
@@ -68,6 +68,8 @@ matplotlib.rcParams.update({"font.size": 14})
 VAR_CODES = {
     "TG0": "T_0", "UG0": "u_0", "VG0": "v_0", "TRG0": "Hq_0", "PSG0": "PS_0",
     "TG1": "T_1", "UG1": "u_1", "VG1": "v_1", "TRG1": "Hq_1", "PSG1": "PS_1",
+    "WDG1": r"\theta_1",
+    "WDG1": r"\theta_1",
 }
 PS_LEVELS_MB = [30, 100, 200, 300, 500, 700, 850, 925]
 

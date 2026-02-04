@@ -35,9 +35,10 @@ except ImportError:
 VAR_CODES = {
     "TG0": "T_0", "UG0": "u_0", "VG0": "v_0", "TRG0": "Hq_0", "PSG0": "PS_0",
     "TG1": "T_1", "UG1": "u_1", "VG1": "v_1", "TRG1": "Hq_1", "PSG1": "PS_1",
+    "WDG1": r"\theta_1",
 }
 PSLVL = [30, 100, 200, 300, 500, 700, 850, 925]
-MODEL_VARS = ["PSG0", "PSG1", "TG0", "TG1", "TRG0", "TRG1", "UG0", "UG1", "VG0", "VG1"]
+MODEL_VARS = ["PSG0", "PSG1", "TG0", "TG1", "TRG0", "TRG1", "UG0", "UG1", "VG0", "VG1", "WDG1"]
 
 
 def compute_l2_error(state, truth):
@@ -210,7 +211,7 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
             if not np.all(np.isnan(noda)):
                 plt.plot(cycles, noda, color="k", label="NODA")
                 
-            plt.ylabel(r"Absolute $\mathcal{L}_2$ Error")
+            plt.ylabel(r"RMSE")
             plt.xlabel(r"$\mathrm{Assimilation\ Step}$")
             plt.legend(loc="best", prop={"size": 14})
             plt.tight_layout()
