@@ -164,14 +164,25 @@ class EnKF_MC_obs(ensemble_DA):
             XB_block = XB_info['XB_b'];
             R_block  = R_info['R'];
             Binv_sqrt_block = XB_info['Binv_s_b'];
-            XA_block = self.perform_assimilation_block(XB_block, Binv_sqrt_block, H_block, R_block, Ys_block);
+            
+            # Identify WDG1 observations for circular statistics
+            is_wdg_list = []
+            if hasattr(ob, 'obs_m') and len(ob.obs_m) > block:
+                 for o_info in ob.obs_m[block]:
+                     var_idx = o_info[0][0]
+                     count = o_info[1]
+                     is_this_wdg = (self.nm.var_names[var_idx] == 'WDG1')
+                     is_wdg_list.extend([is_this_wdg] * count)
+            is_wdg = np.array(is_wdg_list, dtype=bool)
+            
+            XA_block = self.perform_assimilation_block(XB_block, Binv_sqrt_block, H_block, R_block, Ys_block, is_wdg);
             XA_block = self.covariance_inflation(XA_block);
             self.XA_map.append(XA_block);
             # write unified Netcdf files for this block/cycle
             self._write_unified_nc_block(block, H_block, R_block, XB_block, XA_block)
         self.map_vector_states(); #Update ensemble folders
     
-    def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys):
+    def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys, is_wdg=None):
       
           # 1. Compute linear predicted observations
           Hb_X = H @ XB
@@ -225,6 +236,13 @@ class EnKF_MC_obs(ensemble_DA):
               # Standard Linear Case
               Ds = Ys - Hb_X
               H_spar = H.toarray()
+          
+          # --- CIRCULAR STATISTICS CORRECTION (WDG1) ---
+          if is_wdg is not None and np.any(is_wdg):
+              if Ds.shape[0] == is_wdg.shape[0]:
+                  # diff = (diff + pi) % 2pi - pi
+                  diff_circ = (Ds[is_wdg] + np.pi) % (2.0 * np.pi) - np.pi
+                  Ds[is_wdg] = diff_circ
           
           # 3. Standard EnKF Update (using potentially modified H_spar, R, Ds)
           P = spa.linalg.spsolve_triangular(Binv_sqrt, H_spar.T, lower=False);

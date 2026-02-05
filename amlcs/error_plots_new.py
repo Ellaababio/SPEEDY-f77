@@ -53,14 +53,14 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
     print(f"Processing experiment: {exp_path}")
     
     if output_dir and not pd.isna(output_dir):
-        # Use explicit output directory if provided
-        plots_path = Path(output_dir)
-    elif plot_dir_name and not pd.isna(plot_dir_name):
-        # Use exp_path / plot_dir_name
-        plots_path = exp_path / plot_dir_name
+        base_path = Path(output_dir)
     else:
-        # Default fallback: exp_path / plots / errors_nc
-        plots_path = exp_path / "plots" / "errors_nc"
+        base_path = exp_path / "plots" / "errors_nc"
+
+    if plot_dir_name and not pd.isna(plot_dir_name):
+        plots_path = base_path / plot_dir_name
+    else:
+        plots_path = base_path
             
     plots_path.mkdir(parents=True, exist_ok=True)
     print(f"Saving plots to: {plots_path}")
@@ -169,6 +169,11 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                                     anchor_data[var][lev] = err_noda
                             else:
                                 data[var][lev]['noda'].append(np.nan)
+                        else:
+                            # Missing data for this cycle, append NaNs to maintain alignment
+                            data[var][lev]['ana'].append(np.nan)
+                            data[var][lev]['bkg'].append(np.nan)
+                            data[var][lev]['noda'].append(np.nan)
         except Exception as e:
             print(f"Error reading {nc_file}: {e}")
             continue

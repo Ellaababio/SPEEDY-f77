@@ -16,8 +16,8 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/nonlinear_results/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/nonlinear_results/data"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -43,7 +43,7 @@ GENERATE_LOG_PLOTS = False
 
 # Output directory name (optional)
 # If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'ENKF_MC_obs_nonlinear_vs_ReverseSDE_nonlinear'  
+PLOT_DIR_NAME = 'enkf_vs_reverse_sde_linear_no_uv_obs'  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -213,6 +213,28 @@ def _read_nc_field(nc_path: Path, var: str, lev: int) -> np.ndarray:
             elif data.ndim == 4:  # (time, nlev, lat, lon)
                 return data[0, lev, :, :]
                 
+        # 3. Fallback for WDG1 (Derived from U/V if not present)
+        if var == "WDG1":
+            # Helper to find component
+            def find_comp(cname):
+                # Try prefixed
+                for prefix in ["xa_mean", "xb_mean", "truth", "noda", "obs"]:
+                    fn = f"{prefix}_{cname}_lev{lev}"
+                    if fn in nc.variables: return nc.variables[fn][:]
+                # Try raw
+                if cname in nc.variables:
+                    d = nc.variables[cname]
+                    if d.ndim == 3: return d[lev, :, :]
+                    if d.ndim == 2: return d[:]
+                    if d.ndim == 4: return d[0, lev, :, :]
+                return None
+
+            u_data = find_comp("UG1")
+            v_data = find_comp("VG1")
+            
+            if u_data is not None and v_data is not None:
+                return np.arctan2(v_data, u_data)
+
         raise KeyError(f"Field {var} (lev {lev}) not found in {nc_path}")
 
 
