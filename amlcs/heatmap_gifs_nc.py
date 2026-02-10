@@ -28,7 +28,7 @@ REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 OUT_DIR_NAME = "../heatmaps_nc"
 
 # Variables to process
-VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
+VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WSG1"]
 
 # Level index to plot (for 3D vars) - PSG1 is 2D so this is ignored for it
 LEVEL_IDX = 7  # Surface level for T21 (0 is top, 7 is bottom)
@@ -37,7 +37,7 @@ LEVEL_IDX = 7  # Surface level for T21 (0 is top, 7 is bottom)
 NLAT, NLON = 32, 64
 
 # Units for time-series plots
-UNITS = {"UG1": "m/s", "VG1": "m/s", "TG1": "K", "TRG1": "g/kg", "PSG1": "log(ps/p0)"}
+UNITS = {"UG1": "m/s", "VG1": "m/s", "TG1": "K", "TRG1": "g/kg", "PSG1": "log(ps/p0)", "WSG1": "m/s"}
 
 # =============================================================
 
@@ -84,6 +84,19 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
                 return data[:]
             elif data.ndim == 4:  # (time, nlev, lat, lon)
                 return data[0, lev if "PSG" not in var else 0, :, :]
+
+        # 3. Fallback for WSG1 (Wind Speed) if derived
+        if var == "WSG1":
+            # Try to read components
+            if prefix:
+                u = _read_nc_field(nc_path, "UG1", lev, prefix)
+                v = _read_nc_field(nc_path, "VG1", lev, prefix)
+            else:
+                u = _read_nc_field(nc_path, "UG1", lev)
+                v = _read_nc_field(nc_path, "VG1", lev)
+            
+            if not np.all(np.isnan(u)) and not np.all(np.isnan(v)):
+                 return np.sqrt(u**2 + v**2)
 
     return np.full((NLAT, NLON), np.nan)
 

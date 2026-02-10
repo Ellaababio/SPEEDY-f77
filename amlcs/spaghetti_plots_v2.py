@@ -13,11 +13,11 @@ from netCDF4 import Dataset
 
 # Path to the sde_tracking.nc file
 # Update this to point to your new experiment's output
-NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/sde_tracking.nc"
+NC_PATH = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_added_no_uv_obs/data/sde_tracking.nc"
 
 # Output directory for plots
 # Output directory base
-OUT_DIR_BASE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results/sde_plots/wg1_no_uv_obs"
+OUT_DIR_BASE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_added_no_uv_obs/sde_plots"
 
 # Toggle splitting
 SPLIT_PLOTS = False

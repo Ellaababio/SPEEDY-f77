@@ -16,8 +16,8 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_added_no_uv_obs/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_no_uv_obs/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -29,8 +29,8 @@ CYCLES = list(range(20))
 # Base directory for reference solutions (Truth/NoDA)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 
-# Variables to compare:
-VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1", "WDG1"]
+# Variables to compare (only model variables):
+VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
 
 # Anchor mode: "step0" or "step1"
 ANCHOR = "step1"
@@ -41,9 +41,12 @@ SCALE_MODE = "linear"
 # Generate log plots? (Set False for absolute-only plots)
 GENERATE_LOG_PLOTS = False
 
-# Output directory name (optional)
-# If None → "<method1>_vs_<method2>"
-PLOT_DIR_NAME = 'enkf_vs_reverse_sde_linear_no_uv_obs'  
+# Explicit Output Directory (optional)
+# If set, plots will be saved here directly.
+OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_added_no_uv_obs/enkf_vs_reverseSDE"
+
+# Output directory name (ignored if OUTPUT_DIR is set)
+PLOT_DIR_NAME = None  
 
 ###############################################################################
 # ======================= END USER SETTINGS ==================================
@@ -514,6 +517,17 @@ def run_dual_plots():
     print(f"Output directory tag: {out_name}")
 
     def _ensure(scale):
+        if OUTPUT_DIR:
+            d = Path(OUTPUT_DIR)
+            if scale == "log":
+                d = d / "log"
+            elif scale == "linear" and GENERATE_LOG_PLOTS: # split if both
+                 d = d / "linear"
+            # else: just use d directly if only one mode
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+
+        # Legacy behavior
         if scale == "log":
             d1 = exp1 / out_name
             d2 = exp2 / out_name

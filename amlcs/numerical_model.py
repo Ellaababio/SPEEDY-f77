@@ -19,7 +19,7 @@ class numerical_model:
       initial_condition = None;
       Nens = None;
 
-      var_names = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1', 'WDG1'];
+      var_names = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1', 'WDG1', 'WSG1'];
 
       x_ic = None;
       X = None;
@@ -99,6 +99,19 @@ class numerical_model:
            for v in range(0,n_vars):
                var_name = var_names[v];
                
+               # Virtual Variable: WSG1
+               if var_name == 'WSG1':
+                   if u_idx != -1 and v_idx != -1 and len(x) > v_idx:
+                        ug1 = x[u_idx]
+                        vg1 = x[v_idx]
+                        # Compute WSG1: sqrt(UG1^2 + VG1^2)
+                        wsg1 = np.sqrt(ug1**2 + vg1**2)
+                        x.append(wsg1)
+                   else:
+                        print("Warning: Could not compute WSG1, missing UG1/VG1. Appending zeros.")
+                        x.append(np.zeros_like(x[0]))
+                   continue
+
                # Virtual Variable: WDG1
                if var_name == 'WDG1':
                    # Ensure we have UG1 and VG1 loaded
@@ -199,6 +212,7 @@ class numerical_model:
           TRG1 = ds.createVariable('TRG1', np.float64, ('ntr','lev', 'lat', 'lon'))
           PSG1 = ds.createVariable('PSG1', np.float64, ('lat', 'lon',))
           WDG1 = ds.createVariable('WDG1', np.float64, ('lev','lat', 'lon'));
+          WSG1 = ds.createVariable('WSG1', np.float64, ('lev','lat', 'lon'));
           
           #print([UG0.shape, xs[0].shape]);
 
@@ -216,6 +230,8 @@ class numerical_model:
           PSG1[:,:] = xs[9][:,:];
           if len(xs) > 10:
               WDG1[:,:,:] = xs[10][:,:,:];
+          if len(xs) > 11:
+              WSG1[:,:,:] = xs[11][:,:,:];
           
           ds.close();
 
@@ -537,8 +553,8 @@ class numerical_model:
           var_all = [1,1,1,1,1,1,1,1];
           var_one = [1,0,0,0,0,0,0,0];
           var_two = [0,0,1,1,1,1,1,1];
-          # Updated mask_lev to include WDG1 (index 10) as var_all
-          self.mask_lev = [var_all,var_all,var_all,var_two,var_one,var_all,var_all,var_all,var_two,var_one, var_all];
+          # Updated mask_lev to include WDG1 (index 10) and WSG1 (index 11) as var_all
+          self.mask_lev = [var_all,var_all,var_all,var_two,var_one,var_all,var_all,var_all,var_two,var_one, var_all, var_all];
           if np.size(option)>1: self.mask_cor = option;
           if option==1: self.create_rel_per_level();
           if option==2: self.create_per_variable();

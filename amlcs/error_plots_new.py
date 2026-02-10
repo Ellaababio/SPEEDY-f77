@@ -35,10 +35,10 @@ except ImportError:
 VAR_CODES = {
     "TG0": "T_0", "UG0": "u_0", "VG0": "v_0", "TRG0": "Hq_0", "PSG0": "PS_0",
     "TG1": "T_1", "UG1": "u_1", "VG1": "v_1", "TRG1": "Hq_1", "PSG1": "PS_1",
-    "WDG1": r"\theta_1",
+    "WDG1": r"\theta_1", "WSG1": "WS_1",
 }
 PSLVL = [30, 100, 200, 300, 500, 700, 850, 925]
-MODEL_VARS = ["PSG0", "PSG1", "TG0", "TG1", "TRG0", "TRG1", "UG0", "UG1", "VG0", "VG1", "WDG1"]
+MODEL_VARS = ["PSG0", "PSG1", "TG0", "TG1", "TRG0", "TRG1", "UG0", "UG1", "VG0", "VG1", "WDG1", "WSG1"]
 
 
 def compute_l2_error(state, truth):
@@ -104,6 +104,14 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                         lev_tag = f"lev{lev}"
                         def read_var(prefix):
                             vname = f"{prefix}_{var}_{lev_tag}"
+                            # Fallback for WSG1
+                            if var == "WSG1" and vname not in nc.variables:
+                                u_name = f"{prefix}_UG1_{lev_tag}"
+                                v_name = f"{prefix}_VG1_{lev_tag}"
+                                if u_name in nc.variables and v_name in nc.variables:
+                                    u = nc.variables[u_name][:]
+                                    v = nc.variables[v_name][:]
+                                    return np.sqrt(u**2 + v**2)
                             return nc.variables[vname][:] if vname in nc.variables else None
 
                         tr = read_var("truth")
@@ -145,6 +153,14 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                         lev_tag = f"lev{lev}"
                         def read_var(prefix):
                             vname = f"{prefix}_{var}_{lev_tag}"
+                            # Fallback for WSG1
+                            if var == "WSG1" and vname not in nc.variables:
+                                u_name = f"{prefix}_UG1_{lev_tag}"
+                                v_name = f"{prefix}_VG1_{lev_tag}"
+                                if u_name in nc.variables and v_name in nc.variables:
+                                    u = nc.variables[u_name][:]
+                                    v = nc.variables[v_name][:]
+                                    return np.sqrt(u**2 + v**2)
                             return nc.variables[vname][:] if vname in nc.variables else None
 
                         xa = read_var("xa_mean")

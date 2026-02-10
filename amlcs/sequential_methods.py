@@ -918,7 +918,7 @@ class ReverseSDE(ensemble_DA):
             nc_init.createDimension("cycle", None)
             nc_init.createDimension("block", None)
             nc_init.createDimension("psteps", psteps)
-            nc_init.createDimension("var", 6)
+            nc_init.createDimension("var", 7)
             nc_init.createDimension("ens", None)
 
             xt_state_mean = nc_init.createVariable(
@@ -953,7 +953,7 @@ class ReverseSDE(ensemble_DA):
             )
 
             var_names = nc_init.createVariable("var_names", str, ("var",))
-            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WDG1"]
+            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WDG1", "WSG1"]
             for ii, name in enumerate(var_list):
                 var_names[ii] = name
 
@@ -1146,6 +1146,7 @@ class ReverseSDE(ensemble_DA):
                 ("TRG1", 7),
                 ("PSG1", None),
                 ("WDG1", 7), # Tracking WDG1 at level 7
+                ("WSG1", 7), # Tracking WSG1 at level 7
             ]
 
             for base_name, lev_target in specs:
@@ -1350,15 +1351,16 @@ class ReverseSDE(ensemble_DA):
                     x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
                     x_norm_step = xt_np # (Nens, m) - Already normalized
 
-                    # Resize storage to 6 variables (was 5)
-                    values_mean = _np.full((6, Nens), _np.nan, dtype=_np.float32)
-                    values_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
+                    # Resize storage to match tracking specs
+                    n_tracked = len(specs)
+                    values_mean = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
+                    values_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
                     
-                    values_norm_mean = _np.full((6, Nens), _np.nan, dtype=_np.float32)
-                    values_norm_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_mean = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
                     
-                    values_force_prior_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
-                    values_force_like_gridpoint = _np.full((6, Nens), _np.nan, dtype=_np.float32)
+                    values_force_prior_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
+                    values_force_like_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
@@ -1432,7 +1434,7 @@ class ReverseSDE(ensemble_DA):
                             
                             
                         if (i % 20) == 0 or i == 1:
-                            var_list = ["UG1","VG1","TG1","TRG1","PSG1", "WDG1"]
+                            var_list = ["UG1","VG1","TG1","TRG1","PSG1", "WDG1", "WSG1"]
                             # Only print if we actually have values (not all NaN)
                             # Check first element to see if it's NaN
                             if not _np.isnan(values_mean[vidx, 0]):

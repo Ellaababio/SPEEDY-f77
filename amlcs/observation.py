@@ -121,6 +121,9 @@ class observation:
                       if variable == 10:
                           print(f"Warning: No obs error specified for WDG1 (idx {variable}). Using default 1.0 rad.")
                           err_obm = 1.0
+                      elif variable == 11:
+                          print(f"Warning: No obs error specified for WSG1 (idx {variable}). Using default 1.0 m/s.")
+                          err_obm = 1.0
                       else:
                           print(f"Warning: No obs error specified for var idx {variable}. Using default 1.0")
                           err_obm = 1.0
