@@ -40,6 +40,69 @@ class ensemble_DA:
         
     
 
+    
+    def get_block_indices(self, block_idx):
+        """
+        Identify indices of variables within a block.
+        Returns a dict with boolean masks or index arrays for U, V, WDG, WSG.
+        Also returns the 'core' state mask (excluding WDG/WSG).
+        """
+        mask_cor = self.nm.mask_cor[block_idx]
+        var_names = self.nm.var_names
+        
+        # Calculate total size of block and start/end indices for each var
+        idx_map = {} # Initialize empty to capture all variables
+        
+        # Ensure we specifically track these for WDG/WSG logic later if needed, 
+        # though dynamic addition covers them if they exist in the block.
+        # But let's initialize known empty lists for WDG1/WSG1 just in case 
+        # the consumer expects them to exist even if empty? 
+        # Looking at consumer code: `wdg_indices = idx_info.get('WDG1', [])` - usage uses .get(), so safe.
+        
+        all_indices = []
+        current_idx = 0
+        
+        # We need to map linear indices in XB_block back to variables
+        # XB_block stack variables vertically.
+        # But wait, get_ensemble_block flattens them?
+        # get_ensemble_block: concatenate((XB_block, XB_v), axis=0)
+        # So variables are stacked sequentially.
+        
+        for v in mask_cor:
+            v_info = v[0]
+            var_idx = v_info[0]
+            var_name = var_names[var_idx]
+            
+            # Dimensions
+            v_reso = v[1] # lat, lon
+            n_points = v_reso[0] * v_reso[1]
+            
+            indices = list(range(current_idx, current_idx + n_points))
+            
+            if var_name not in idx_map:
+                idx_map[var_name] = []
+            idx_map[var_name].extend(indices)
+                
+            current_idx += n_points
+            
+        # Create masks/arrays
+        res = {}
+        for key in idx_map:
+            res[key] = np.array(idx_map[key], dtype=int)
+            
+        # Core State Mask (Exclude WDG1, WSG1)
+        # Assuming we want to exclude them from the Update/Diffusion State
+        # If they are not in the block, these lists are empty.
+        total_size = current_idx
+        is_virtual = np.zeros(total_size, dtype=bool)
+        if 'WDG1' in res and len(res['WDG1']) > 0: is_virtual[res['WDG1']] = True
+        if 'WSG1' in res and len(res['WSG1']) > 0: is_virtual[res['WSG1']] = True
+        
+        res['core_mask'] = ~is_virtual
+        res['is_wdg_mask'] = is_virtual # Or specific masks
+        
+        return res
+
     def load_background_ensemble(self):
         nm = self.nm;
         nm.load_ensemble();
@@ -116,180 +179,61 @@ class ensemble_DA:
     def clear_all(self):
         self.nm.clear_all_folders();
 
-##########################################################################################
-##########################################################################################
-##########################################################################################
-# Observation space version of:
-# Nino-Ruiz, E. D., Sandu, A., & Deng, X. (2018). An ensemble Kalman filter implementation based on modified Cholesky decomposition for inverse covariance matrix estimation. SIAM Journal on Scientific Computing, 40(2), A867-A886.
-# To be published
-##########################################################################################
-##########################################################################################
-##########################################################################################
-class EnKF_MC_obs(ensemble_DA):
-    def __init__(self, nm, infla, Nens, nonlinear_obs=True, scalefact=1.0):
-        super().__init__(nm, infla, Nens)
-        self.nonlinear_obs = bool(nonlinear_obs)
-        self.scalefact = float(scalefact)
-            
-    
-    def prepare_background(self):
-        mask_cor = self.nm.mask_cor;
-        var_names = self.nm.var_names;
-        Nens = self.Nens;
-        self.XB_map = [];
-        gr = self.nm.gs;
-        for msk_cor, pre_info in zip(mask_cor, gr.lpr):
-            XB_block = self.get_ensemble_block(msk_cor);
-            xb_block = XB_block.mean(axis=1).reshape(-1,1);
-            DX_block = XB_block-xb_block;
-            Binv_sqrt_block = compute_modified_Cholesky_decomposition(DX_block, pre_info, thr=0.15);
-
-            self.XB_map.append({'XB_b':XB_block, 'xb_b':xb_block, 'Binv_s_b':Binv_sqrt_block});
-     
-    def prepare_analysis(self, ob, k, args = None):
-        self.Ys = [];
-        Nens = self.Nens;
-        mask_cor = self.nm.mask_cor;
-        N_blocks = len(mask_cor);
-        for block in range(0, N_blocks):
-            Ys_block = ob.get_perturbed_observations(block, k, Nens);  
-            self.Ys.append(Ys_block); 
-        # store unperturbed obs for each block (same source ReverseSDE used)
-        self.Y_unp = [ob.y_obs[k][block] for block in range(0, N_blocks)]
-        self._cycle_k = k
-    
-    def perform_assimilation(self, ob):
-        self.XA_map = [];
-        for block, (XB_info, Ys_block, R_info, H_block) in enumerate(zip(self.XB_map, self.Ys, ob.obs_R_sparse, ob.obs_H_sparse)):
-            XB_block = XB_info['XB_b'];
-            R_block  = R_info['R'];
-            Binv_sqrt_block = XB_info['Binv_s_b'];
-            
-            # Identify WDG1 observations for circular statistics
-            is_wdg_list = []
-            if hasattr(ob, 'obs_m') and len(ob.obs_m) > block:
-                 for o_info in ob.obs_m[block]:
-                     var_idx = o_info[0][0]
-                     count = o_info[1]
-                     is_this_wdg = (self.nm.var_names[var_idx] == 'WDG1')
-                     is_wdg_list.extend([is_this_wdg] * count)
-            is_wdg = np.array(is_wdg_list, dtype=bool)
-            
-            XA_block = self.perform_assimilation_block(XB_block, Binv_sqrt_block, H_block, R_block, Ys_block, is_wdg);
-            XA_block = self.covariance_inflation(XA_block);
-            self.XA_map.append(XA_block);
-            # write unified Netcdf files for this block/cycle
-            self._write_unified_nc_block(block, H_block, R_block, XB_block, XA_block)
-        self.map_vector_states(); #Update ensemble folders
-    
-    def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys, is_wdg=None):
-      
-          # 1. Compute linear predicted observations
-          Hb_X = H @ XB
-          
-          # 2. Handle Nonlinear/Normalization Logic
-          if self.nonlinear_obs:
-              sf = self.scalefact
-              
-              # Compute normalization stats from ensemble predictions
-              mu = np.mean(Hb_X, axis=1, keepdims=True)
-              sigma = np.std(Hb_X, axis=1, keepdims=True)
-              sigma = np.maximum(sigma, 1e-6) # Avoid div/0
-              
-              # Transform Observations (Ys)
-              # Assumption: Ys are already in nonlinear space (atan(x))
-              # 1. Inverse nonlinear: tan(y) / sf
-              # 2. Normalize: (val - mu) / sigma
-              # 3. Re-apply nonlinear: atan(sf * val)
-              Ys_clamped = np.clip(Ys, -1.55, 1.55)
-              Ys_linear = np.tan(Ys_clamped) / sf
-              Ys_norm = (Ys_linear - mu) / sigma
-              Ys_final = np.arctan(sf * Ys_norm)
-              
-              # Transform Predictions (Hb_X)
-              # Hb_X is linear (H@XB), so just normalize and apply nonlinear
-              Hb_X_norm = (Hb_X - mu) / sigma
-              Hb_X_final = np.arctan(sf * Hb_X_norm)
-              
-              # Calculate Innovation
-              Ds = Ys_final - Hb_X_final
-              
-              # Scale H and R (Effective Jacobian)
-              # J approx sf / sigma
-              scale_vec = (sf / sigma).flatten()
-              
-              # Scale H (dense version for EnKF)
-              H_spar = H.toarray()
-              H_spar = H_spar * scale_vec[:, None]
-              
-              # Scale R (sparse diagonal)
-              # R is already in arctan units (from CSV), so NO scaling needed.
-              # if spa.issparse(R):
-              #     R_diag = R.diagonal()
-              #     R_final_diag = R_diag * (scale_vec**2)
-              #     R = spa.diags(R_final_diag)
-              # else:
-              #     # Fallback if R is dense
-              #     R = R * (scale_vec[:, None]**2)
-                  
-          else:
-              # Standard Linear Case
-              Ds = Ys - Hb_X
-              H_spar = H.toarray()
-          
-          # --- CIRCULAR STATISTICS CORRECTION (WDG1) ---
-          if is_wdg is not None and np.any(is_wdg):
-              if Ds.shape[0] == is_wdg.shape[0]:
-                  # diff = (diff + pi) % 2pi - pi
-                  diff_circ = (Ds[is_wdg] + np.pi) % (2.0 * np.pi) - np.pi
-                  Ds[is_wdg] = diff_circ
-          
-          # 3. Standard EnKF Update (using potentially modified H_spar, R, Ds)
-          P = spa.linalg.spsolve_triangular(Binv_sqrt, H_spar.T, lower=False);
-          
-          Inno = R + P.T @ P;
-
-          Q_temp = P @ spa.linalg.spsolve(Inno, Ds);
-          
-          #Q_temp = spa.linalg.spsolve_triangular(Binv_sqrt,Q_temp,lower=False);
-          
-          DXa = spa.linalg.spsolve_triangular(Binv_sqrt.T, Q_temp, lower=True);
-
-          XA = XB + DXa;  
-          
-          return XA;
-    
-    # ------------------ minimal writer (NetCDF truth/NoDA) ------------------
-    def _write_unified_nc_block(self, block, H_block, R_block, XB_block, XA_block):
+    # ------------------ unified NetCDF writer (moved from EnKF to base) ------------------
+    def _write_unified_nc_block(self, block, H_block=None, R_block=None, XB_block=None, XA_block=None, cycle_k=None, obs_info=None):
         """
         HPC-safe NetCDF writer (single .nc per cycle).
-        Does NOT use _FillValue or compression args.
+        Handles both EnKF (H/R) and ReverseSDE (obs_info) inputs.
         """
         import numpy as np
         from netCDF4 import Dataset
+
+        # Resolve cycle index k
+        k = cycle_k
+        if k is None:
+            if hasattr(self, '_cycle_k'): k = self._cycle_k
+            elif hasattr(self, 'current_cycle_k'): k = self.current_cycle_k
+        
+        if k is None:
+            print("[write_unified_nc_block] Warning: cycle_k could not be determined. Skipping write.")
+            return
 
         # ensemble means
         xb_mean_full = XB_block.mean(axis=1)
         xa_mean_full = XA_block.mean(axis=1)
 
-        # sorted observation indices
-        Hc = H_block.tocoo()
-        order = np.argsort(Hc.row)
-        obs_idx_block = Hc.col[order].astype(int)
+        # Helper to extract obs details
+        obs_idx_block = np.array([], dtype=int)
+        obs_vals = np.array([])
+        sigma_vec = np.array([])
+        
+        # METHOD A: EnKF style (H sparse matrix provided)
+        if H_block is not None and R_block is not None:
+            Hc = H_block.tocoo()
+            order = np.argsort(Hc.row)
+            obs_idx_block = Hc.col[order].astype(int)
 
-        # unperturbed obs and sigma
-        y_unp = self.Y_unp[block].reshape(-1)
-        obs_vals = y_unp[: obs_idx_block.size]
+            # unperturbed obs
+            # check self.Y_unp existence
+            if hasattr(self, 'Y_unp') and len(self.Y_unp) > block:
+                y_unp = self.Y_unp[block].reshape(-1)
+                obs_vals = y_unp[: obs_idx_block.size]
+            
+            # sigma
+            try:
+                R_diag = R_block.diagonal()
+            except:
+                R_diag = np.array(R_block.todense()).diagonal()
+            sigma_vec = np.sqrt(np.asarray(R_diag)).reshape(-1)[: obs_idx_block.size]
 
-        try:
-            R_diag = R_block.diagonal()
-        except:
-            R_diag = np.array(R_block.todense()).diagonal()
-
-        sigma_vec = np.sqrt(np.asarray(R_diag)).reshape(-1)[: obs_idx_block.size]
-
+        # METHOD B: ReverseSDE style (obs_info dict provided)
+        elif obs_info is not None:
+             # obs_info = {'idx_observed': ..., 'y': ..., 'sigma': ...}
+             obs_idx_block = obs_info.get('idx_observed', np.array([]))
+             obs_vals = obs_info.get('y', np.array([]))
+             sigma_vec = obs_info.get('sigma', np.array([]))
+        
         # load truth/noDA
-        k = self._cycle_k
         ref_nc = os.path.join(self.nm.snapshots, f"reference_solution_{k}.nc")
         fru_nc = os.path.join(self.nm.free_run,    f"free_run_{k}.nc")
         X_ref = self.nm.load_netcdf_file(ref_nc)
@@ -351,9 +295,11 @@ class EnKF_MC_obs(ensemble_DA):
             sel = (obs_idx_block >= start) & (obs_idx_block < end)
             if sel.any():
                 local = obs_idx_block[sel] - start
-                obs[local] = obs_vals[sel]
-                sig[local] = sigma_vec[sel]
-                iso[local] = 1
+                # Safety for extracted values
+                if sel.sum() <= len(obs_vals) and sel.sum() <= len(sigma_vec):
+                     obs[local] = obs_vals[sel] if len(obs_vals) > 0 else np.nan
+                     sig[local] = sigma_vec[sel] if len(sigma_vec) > 0 else np.nan
+                     iso[local] = 1
 
             obs_2d = obs.reshape(lat, lon)
             sig_2d = sig.reshape(lat, lon)
@@ -371,6 +317,346 @@ class EnKF_MC_obs(ensemble_DA):
             _get_or_create_var("is_obs",  var_name, lev_tag, "i4")[:, :] = iso_2d
 
         ds.close()
+
+##########################################################################################
+##########################################################################################
+##########################################################################################
+# Observation space version of:
+# Nino-Ruiz, E. D., Sandu, A., & Deng, X. (2018). An ensemble Kalman filter implementation based on modified Cholesky decomposition for inverse covariance matrix estimation. SIAM Journal on Scientific Computing, 40(2), A867-A886.
+# To be published
+##########################################################################################
+##########################################################################################
+##########################################################################################
+class EnKF_MC_obs(ensemble_DA):
+    def __init__(self, nm, infla, Nens, nonlinear_obs=True, scalefact=1.0):
+        super().__init__(nm, infla, Nens)
+        self.nonlinear_obs = bool(nonlinear_obs)
+        self.scalefact = float(scalefact)
+            
+    
+    def prepare_background(self):
+        mask_cor = self.nm.mask_cor;
+        var_names = self.nm.var_names;
+        Nens = self.Nens;
+        self.XB_map = [];
+        gr = self.nm.gs;
+        for block, (msk_cor, pre_info) in enumerate(zip(mask_cor, gr.lpr)):
+            XB_block = self.get_ensemble_block(msk_cor);
+            
+            # --- Integrity Check: Initialize WDG1/WSG1 from U/V if present ---
+            # This ensures that if they were read as 0s (uninitialized), they get valid values
+            # preventing 0-variance -> Infinite Binv -> NaNs
+            idx_info = self.get_block_indices(block)
+            idx_u = idx_info.get('UG1', [])
+            idx_v = idx_info.get('VG1', [])
+            idx_wdg = idx_info.get('WDG1', [])
+            idx_wsg = idx_info.get('WSG1', [])
+            
+            if len(idx_u) > 0 and len(idx_v) > 0:
+                # Ensure we have matching number of points for safety
+                n_u = len(idx_u)
+                
+                # Update WDG1
+                if len(idx_wdg) > 0:
+                     limit = min(len(idx_wdg), n_u)
+                     U_sub = XB_block[idx_u[:limit], :]
+                     V_sub = XB_block[idx_v[:limit], :]
+                     # WDG = atan2(V, U)
+                     XB_block[idx_wdg[:limit], :] = np.arctan2(V_sub, U_sub)
+                     
+                # Update WSG1
+                if len(idx_wsg) > 0:
+                     limit = min(len(idx_wsg), n_u)
+                     U_sub = XB_block[idx_u[:limit], :]
+                     V_sub = XB_block[idx_v[:limit], :]
+                     # WSG = sqrt(U^2 + V^2)
+                     XB_block[idx_wsg[:limit], :] = np.sqrt(U_sub**2 + V_sub**2)
+            # -------------------------------------------------------------
+
+            xb_block = XB_block.mean(axis=1).reshape(-1,1);
+            DX_block = XB_block-xb_block;
+            Binv_sqrt_block = compute_modified_Cholesky_decomposition(DX_block, pre_info, thr=0.15);
+
+            self.XB_map.append({'XB_b':XB_block, 'xb_b':xb_block, 'Binv_s_b':Binv_sqrt_block});
+     
+    def prepare_analysis(self, ob, k, args = None):
+        self.Ys = [];
+        Nens = self.Nens;
+        mask_cor = self.nm.mask_cor;
+        N_blocks = len(mask_cor);
+        for block in range(0, N_blocks):
+            Ys_block = ob.get_perturbed_observations(block, k, Nens);  
+            self.Ys.append(Ys_block); 
+        # store unperturbed obs for each block (same source ReverseSDE used)
+        self.Y_unp = [ob.y_obs[k][block] for block in range(0, N_blocks)]
+        self._cycle_k = k
+    
+    def perform_assimilation(self, ob):
+        self.XA_map = [];
+        for block, (XB_info, Ys_block, R_info, H_block) in enumerate(zip(self.XB_map, self.Ys, ob.obs_R_sparse, ob.obs_H_sparse)):
+            XB_block = XB_info['XB_b'];
+            R_block  = R_info['R'];
+            Binv_sqrt_block = XB_info['Binv_s_b'];
+            
+            # Identify U/V/WDG/WSG indices in the state vector XB
+            idx_info = self.get_block_indices(block)
+            
+            # Identify WDG1/WSG1 observations
+            # obs_m[block] contains list of [var_info, count]
+            # We need to build boolean masks for Ys that correspond to WDG or WSG
+            is_wdg_obs = []
+            is_wsg_obs = []
+            if hasattr(ob, 'obs_m') and len(ob.obs_m) > block:
+                 for o_info in ob.obs_m[block]:
+                     var_idx = o_info[0][0]
+                     count = o_info[1]
+                     is_this_wdg = (self.nm.var_names[var_idx] == 'WDG1')
+                     is_this_wsg = (self.nm.var_names[var_idx] == 'WSG1')
+                     is_wdg_obs.extend([is_this_wdg] * count)
+                     is_wsg_obs.extend([is_this_wsg] * count)
+            
+            is_wdg_obs = np.array(is_wdg_obs, dtype=bool)
+            is_wsg_obs = np.array(is_wsg_obs, dtype=bool)
+            
+            XA_block = self.perform_assimilation_block(XB_block, Binv_sqrt_block, H_block, R_block, Ys_block, idx_info, is_wdg_obs, is_wsg_obs);
+            XA_block = self.covariance_inflation(XA_block);
+            self.XA_map.append(XA_block);
+            # write unified Netcdf files for this block/cycle
+            self._write_unified_nc_block(block, H_block, R_block, XB_block, XA_block)
+        self.map_vector_states(); #Update ensemble folders
+    
+    def perform_assimilation_block(self, XB, Binv_sqrt, H, R, Ys, idx_info, is_wdg_obs, is_wsg_obs):
+          
+          # 1. Compute predicted observations (Linear Base)
+          # H is sparse.
+          Hb_X = H @ XB
+          
+          # 2. Nonlinear Observation Operator Override for WDG/WSG
+          # If we have U and V in the state, we can compute h(U,V)
+          # dependent_indices: indices of U and V
+          idx_u = idx_info.get('UG1', [])
+          idx_v = idx_info.get('VG1', [])
+          
+          # Check if we have both U and V to compute derived vars
+          has_uv = (len(idx_u) > 0 and len(idx_v) > 0 and len(idx_u) == len(idx_v))
+          
+          # H_jac will start as a dense copy of H for modification
+          # (Only needed if we have nonlinear observations)
+          H_spar = H.toarray().astype(float)
+          
+          if has_uv and (np.any(is_wdg_obs) or np.any(is_wsg_obs)):
+              U = XB[idx_u, :] # (n_u, Nens)
+              V = XB[idx_v, :] # (n_v, Nens)
+              
+              # Iterate over observations to find which rows correspond to WDG/WSG
+              # and map them to the correct grid point (and thus correct U/V index).
+              # The mapping is implicitly defined by the nonzero entries in H for that row?
+              # NO. If WDG is not in state (or dummy), H might be zero or point to dummy column.
+              # BUT: We know the spatial structure.
+              # Option Mask 1: Block contains all vars for the whole level/domain chunk.
+              # The order of variables in XB is defined by mask_cor.
+              # U is first, V is second... WDG is later.
+              # Logic: The i-th U value corresponds to the i-th WDG value in the block (if they cover same domain).
+              # Let's assume U and WDG arrays are aligned spatially.
+              
+              # Calculate Ensemble Means for Linearization
+              U_mean = U.mean(axis=1)
+              V_mean = V.mean(axis=1)
+              Speed_mean = np.sqrt(U_mean**2 + V_mean**2)
+              Speed2 = U_mean**2 + V_mean**2
+              
+              # Avoid div/0
+              Speed_mean = np.maximum(Speed_mean, 1e-6)
+              Speed2 = np.maximum(Speed2, 1e-6)
+              
+              # Identify rows in Observation Vector (Ys)
+              # and modify Hb_X and H_spar
+              
+              # We need to know which grid point each obs row corresponds to.
+              # H matrix structure: for row r, cols c where H[r,c]=1.
+              # If WDG was in state (index k), H_spar[r, k] = 1.
+              # We can use this to find "k".
+              # Then map k to spatial index relative to start of WDG block?
+              # Map: k -> WDG_indices -> i (0..N).
+              # Then U index is idx_u[i].
+              
+              idx_wdg_state = idx_info.get('WDG1', [])
+              idx_wsg_state = idx_info.get('WSG1', [])
+              
+              # Loop over WDG Observations
+              # rows where is_wdg_obs is True
+              wdg_rows = np.where(is_wdg_obs)[0]
+              # Convert H to CSR for efficient row slicing
+              H_csr = H.tocsr()
+              
+              for r in wdg_rows:
+                  # Find which state variable this observation observes
+                  # Look at H[r, :]
+                  # Since we Kept WDG in the state, H has a 1 at the WDG index.
+                  cols = H_csr[r,:].indices
+                  if len(cols) > 0:
+                      k = cols[0] # Index in XB
+                      # check if k is in idx_wdg_state
+                      if k in idx_wdg_state:
+                          # Map k to local index i
+                          # idx_wdg_state is a sorted list/array of indices.
+                          # Find position of k in it.
+                          i = np.where(idx_wdg_state == k)[0][0]
+                          
+                          # Corresponding U and V indices
+                          u_idx_i = idx_u[i]
+                          v_idx_i = idx_v[i]
+                          
+                          # Compute Nonlinear Predicted Obs: Atan2(V, U)
+                          # Output is (Nens,)
+                          u_vec = XB[u_idx_i, :]
+                          v_vec = XB[v_idx_i, :]
+                          pred_wdg = np.arctan2(v_vec, u_vec)
+                          
+                          # Update Hb_X row
+                          Hb_X[r, :] = pred_wdg
+                          
+                          # Compute Jacobian Terms (averaged or ensemble based?)
+                          # EnKF acts linearly on deviations. P = H P_b H^T.
+                          # Effectively we want linear regression between State and Obs.
+                          # H_jac[r, u_idx] = d(atan)/dU = -V / (U^2+V^2)
+                          # H_jac[r, v_idx] = d(atan)/dV =  U / (U^2+V^2)
+                          # Evaluate at Ensemble Mean
+                          
+                          u_m = U_mean[i]
+                          v_m = V_mean[i]
+                          s2 = Speed2[i]
+                          
+                          dh_du = -v_m / s2
+                          dh_dv =  u_m / s2
+                          
+                          # Update H Matrix (Jacobian)
+                          # Zero out the original "1" on WDG state
+                          H_spar[r, k] = 0.0 
+                          # Add gradients on U and V state
+                          H_spar[r, u_idx_i] = dh_du
+                          H_spar[r, v_idx_i] = dh_dv
+
+              # Loop over WSG Observations
+              wsg_rows = np.where(is_wsg_obs)[0]
+              for r in wsg_rows:
+                  cols = H_csr[r,:].indices
+                  if len(cols) > 0:
+                      k = cols[0]
+                      if k in idx_wsg_state:
+                          i = np.where(idx_wsg_state == k)[0][0]
+                          u_idx_i = idx_u[i]
+                          v_idx_i = idx_v[i]
+                          
+                          u_vec = XB[u_idx_i, :]
+                          v_vec = XB[v_idx_i, :]
+                          pred_wsg = np.sqrt(u_vec**2 + v_vec**2)
+                          
+                          Hb_X[r, :] = pred_wsg
+                          
+                          u_m = U_mean[i]
+                          v_m = V_mean[i]
+                          s_m = Speed_mean[i]
+                          
+                          dh_du = u_m / s_m
+                          dh_dv = v_m / s_m
+                          
+                          H_spar[r, k] = 0.0
+                          H_spar[r, u_idx_i] = dh_du
+                          H_spar[r, v_idx_i] = dh_dv
+
+          # 3. Handle Nonlinear/Normalization Logic (Existing "Atan" Scaling)
+          if self.nonlinear_obs:
+              # Note: Our new WDG/WSG logic produced values in "Physical Space" (m/s, radians).
+              # The existing nonlinear logic assumes input is "Linear Model State".
+              # And allows `atan` scaling.
+              # If we want to use `atan` on top of our physics, we can.
+              # But WDG is circular, `atan` scaling on radians might be weird?
+              # Let's restrict `atan` scaling to NON-WDG variables?
+              # Or apply it to everything?
+              # The user's code previously had explicit exclusions for WDG.
+              # I should re-integrate those exclusions or apply scaling carefully.
+              
+              sf = self.scalefact
+              mu = np.mean(Hb_X, axis=1, keepdims=True)
+              sigma = np.std(Hb_X, axis=1, keepdims=True)
+              sigma = np.maximum(sigma, 1e-6)
+              
+              Ys_clamped = np.clip(Ys, -1.55, 1.55)
+              Ys_linear = np.tan(Ys_clamped) / sf
+              Ys_norm = (Ys_linear - mu) / sigma
+              Ys_final = np.arctan(sf * Ys_norm)
+              
+              Hb_X_norm = (Hb_X - mu) / sigma
+              Hb_X_final = np.arctan(sf * Hb_X_norm)
+              
+              # Skip scaling for WDG? WDG is typically [-pi, pi].
+              # If we scale it, we break circularity?
+              # The user previously used "Exception: Bypass ATAN".
+              # Let's restore that logic.
+              
+              if np.any(is_wdg_obs):
+                  Ys_final[is_wdg_obs, :] = Ys[is_wdg_obs, :]
+                  Hb_X_final[is_wdg_obs, :] = Hb_X[is_wdg_obs, :]
+              
+              Ds = Ys_final - Hb_X_final
+              
+              scale_vec = (sf / sigma).flatten()
+              if np.any(is_wdg_obs):
+                  scale_vec[is_wdg_obs] = 1.0
+                  
+              H_spar = H_spar * scale_vec[:, None]
+              
+          else:
+              Ds = Ys - Hb_X
+          
+          # 4. Circular Statistics Correction (WDG1)
+          if np.any(is_wdg_obs):
+              wdg_rows = np.where(is_wdg_obs)[0]
+              # Only apply if diff shape matches (it should)
+              # diff = (diff + pi) % 2pi - pi
+              Ds[wdg_rows, :] = (Ds[wdg_rows, :] + np.pi) % (2.0 * np.pi) - np.pi
+          
+          # 5. Filter State Update: Ensure we don't update WDG/WSG dummies
+          # The analysis XA = XB + K D.
+          # Since H_jac has 0s for WDG/WSG cols, K will have 0s for WDG/WSG rows?
+          # P = B H.T.  If H col k is 0, P row k is 0.
+          # K = P (R+HPH)^-1. K row k is 0.
+          # So WDG/WSG in XA will remain equal to XB.
+          # This is exactly what we want (they are not updated as state).
+          
+          P = spa.linalg.spsolve_triangular(Binv_sqrt, H_spar.T, lower=False);
+          Inno = R + P.T @ P;
+          Q_temp = P @ spa.linalg.spsolve(Inno, Ds);
+          DXa = spa.linalg.spsolve_triangular(Binv_sqrt.T, Q_temp, lower=True);
+          XA = XB + DXa;  
+          
+          # 6. Post-Update Consistency: Recompute WDG/WSG from updated U/V
+          # This ensures that the derived variables in the analysis are consistent 
+          # with the primary variables, fixing potential linear approximation errors.
+          
+          idx_u = idx_info.get('UG1', [])
+          idx_v = idx_info.get('VG1', [])
+          idx_wdg = idx_info.get('WDG1', [])
+          idx_wsg = idx_info.get('WSG1', [])
+          
+          if len(idx_u) > 0 and len(idx_v) > 0:
+              U_upd = XA[idx_u, :]
+              V_upd = XA[idx_v, :]
+              
+              if len(idx_wdg) > 0:
+                  limit = min(len(idx_wdg), len(idx_u))
+                  wdg_new = np.arctan2(V_upd[:limit], U_upd[:limit])
+                  XA[idx_wdg[:limit], :] = wdg_new
+                  
+              if len(idx_wsg) > 0:
+                  limit = min(len(idx_wsg), len(idx_u))
+                  wsg_new = np.sqrt(U_upd[:limit]**2 + V_upd[:limit]**2)
+                  XA[idx_wsg[:limit], :] = wsg_new
+          
+          return XA;
+    
+
 
 
       
@@ -648,125 +934,7 @@ class ReverseSDE(ensemble_DA):
     # ===== BEGIN: generic grid dump helpers =====
 
 
-    def _write_unified_nc_reverseSDE(self, cycle_k):
-        """
-        HPC-compatible NetCDF writer for ReverseSDE.
-        Saves ALL variables and ALL levels for this cycle.
 
-        Same fields as EnKF_MC_obs:
-            idx, xb_mean, xa_mean, truth, noda, obs, sigma, is_obs
-
-        One file per cycle:
-            reverseSDE_cycle<k>.nc
-        """
-
-        # Load truth / noda snapshots
-        ref_nc = os.path.join(self.nm.snapshots, f"reference_solution_{cycle_k}.nc")
-        nod_nc = os.path.join(self.nm.free_run,   f"free_run_{cycle_k}.nc")
-        X_ref = self.nm.load_netcdf_file(ref_nc)
-        X_nod = self.nm.load_netcdf_file(nod_nc)
-
-        out_dir = self.nm.path
-        os.makedirs(out_dir, exist_ok=True)
-        nc_path = os.path.join(out_dir, f"reverseSDE_cycle{cycle_k}.nc")
-
-        # Create NC file
-        lat, lon = self.nm.gs.get_resolution(self.nm.res)
-        ds = Dataset(nc_path, "w", format="NETCDF4")
-        ds.createDimension("lat", lat)
-        ds.createDimension("lon", lon)
-        ds.cycle = int(cycle_k)
-
-        # --- Metadata (Run Parameters) ---
-        # Saved as global attributes for traceability
-        ds.pseudo_time_steps = int(self.p_time_step)
-        ds.eps_alpha = float(self.eps_alpha)
-        ds.scalefact = float(self.scalefact)
-        ds.eps_beta = float(self.eps_beta)
-        ds.nonlinear_obs = int(self.nonlinear_obs)
-        ds.normalize = int(self.normalize)
-        ds.drift_type = str(self.drift_type)
-        ds.enable_early_stopping = int(self.enable_early_stopping)
-        ds.enable_early_stopping = int(self.enable_early_stopping)
-        ds.score_clip = str(self.score_clip) if self.score_clip is not None else "None"
-        ds.state_clip = str(self.state_clip) if self.state_clip is not None else "None"
-        ds.rng_seed = int(self.rng_seed)
-
-        # Helper to safely create variables
-        def get_or_make(prefix, varname, lev, dtype="f8"):
-            name = f"{prefix}_{varname}_lev{lev}"
-            if name in ds.variables:
-                return ds.variables[name]
-            return ds.createVariable(name, dtype, ("lat", "lon"))
-
-        # Process through blocks exactly like EnKF
-        for block, msk in enumerate(self.nm.mask_cor):
-            XB_block = self.XB_map[block]["XB_b"]   # (n_block, Nens)
-            XA_block = self.XA_map[block]          # (n_block, Nens)
-
-            xb_mean_full = XB_block.mean(axis=1)
-            xa_mean_full = XA_block.mean(axis=1)
-
-            # Observation maps (ReverseSDE)
-            obs_map = self.obs_map[block]
-            idx_obs  = obs_map["idx_observed"]
-            y_obs    = obs_map["y"]
-            sigma    = obs_map["sigma"]
-
-            offset = 0
-            for (v_info, res) in msk:
-                v_idx, lev = v_info
-                lat_n, lon_n = res
-                N = lat_n * lon_n
-                start, end = offset, offset + N
-                offset = end
-
-                varname = self.nm.var_names[v_idx]
-
-                # ==== Extract XB/XA for this variable slice ====
-                xb = xb_mean_full[start:end].reshape(lat_n, lon_n)
-                xa = xa_mean_full[start:end].reshape(lat_n, lon_n)
-
-                # ==== Truth / Noda ====
-                if "PSG" in varname:
-                    tr = X_ref[v_idx]
-                    nd = X_nod[v_idx]
-                else:
-                    tr = X_ref[v_idx][lev, :, :]
-                    nd = X_nod[v_idx][lev, :, :]
-                tr = tr.astype(float)
-                nd = nd.astype(float)
-
-                # ==== Obs fields ====
-                obs = np.full(N, np.nan)
-                sig = np.full(N, np.nan)
-                iso = np.zeros(N, dtype="i4")
-
-                mask = (idx_obs >= start) & (idx_obs < end)
-                if mask.any():
-                    local = idx_obs[mask] - start
-                    obs[local] = y_obs[mask]
-                    sig[local] = sigma[mask]
-                    iso[local] = 1
-
-                obs_2d = obs.reshape(lat_n, lon_n)
-                sig_2d = sig.reshape(lat_n, lon_n)
-                iso_2d = iso.reshape(lat_n, lon_n)
-
-                idx_grid = np.arange(N, dtype="i4").reshape(lat_n, lon_n)
-
-                # ==== Write everything ====
-                get_or_make("idx",     varname, lev, "i4")[:, :] = idx_grid
-                get_or_make("xb_mean", varname, lev)[:, :] = xb
-                get_or_make("xa_mean", varname, lev)[:, :] = xa
-                get_or_make("truth",   varname, lev)[:, :] = tr
-                get_or_make("noda",    varname, lev)[:, :] = nd
-                get_or_make("obs",     varname, lev)[:, :] = obs_2d
-                get_or_make("sigma",   varname, lev)[:, :] = sig_2d
-                get_or_make("is_obs",  varname, lev, "i4")[:, :] = iso_2d
-
-        ds.close()
-        print(f"[ReverseSDE] Wrote {nc_path}")
 
 
 
@@ -905,8 +1073,7 @@ class ReverseSDE(ensemble_DA):
         # -------- CONFIG --------
         self._cycle_idx = getattr(self, "_cycle_idx", 0) + 1
         DEBUG_EVERY = 20
-        SAVE_GAUSS_BLOCKS = False
-        GAUSS_DIRNAME = "gauss_checks"
+        # ------------------------
         # ------------------------
         cycle_k = int(getattr(self, "current_cycle_k", 0))  # from prepare_analysis
 
@@ -918,7 +1085,7 @@ class ReverseSDE(ensemble_DA):
             nc_init.createDimension("cycle", None)
             nc_init.createDimension("block", None)
             nc_init.createDimension("psteps", psteps)
-            nc_init.createDimension("var", 7)
+            nc_init.createDimension("var", 5)
             nc_init.createDimension("ens", None)
 
             xt_state_mean = nc_init.createVariable(
@@ -953,7 +1120,7 @@ class ReverseSDE(ensemble_DA):
             )
 
             var_names = nc_init.createVariable("var_names", str, ("var",))
-            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WDG1", "WSG1"]
+            var_list = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
             for ii, name in enumerate(var_list):
                 var_names[ii] = name
 
@@ -963,6 +1130,7 @@ class ReverseSDE(ensemble_DA):
         xt_state_mean = nc["xt_state_mean"]
         xt_state_gridpoint = nc["xt_state_gridpoint"]
         xt_norm_mean = nc["xt_norm_mean"]
+        xt_norm_mean = nc["xt_norm_mean"]
         xt_norm_gridpoint = nc["xt_norm_gridpoint"]
         # Safe loading for existing files that might lack new vars
         if "xt_force_prior_gridpoint" in nc.variables:
@@ -971,9 +1139,6 @@ class ReverseSDE(ensemble_DA):
         else:
             xt_force_prior_gridpoint = None
             xt_force_like_gridpoint = None
-            
-        # Ensure var dimension is correct magnitude to avoid potential misalignment if file exists
-        # (Though usually Nens is unlimited or we are appending time, var is fixed. Optimally we'd check)
 
         
         OBS_INCLUDE = getattr(self, "obs_include_vars", None)
@@ -1047,12 +1212,6 @@ class ReverseSDE(ensemble_DA):
             return vnames
 
 
-        # Prepare output dir for gaussianity blocks (if enabled)
-        if SAVE_GAUSS_BLOCKS:
-            try:
-                os.makedirs(os.path.join(self.nm.path, GAUSS_DIRNAME), exist_ok=True)
-            except Exception as e:
-                print(f"[ReverseSDE] WARNING: could not create gauss dir: {e}")
 
         # Preflight: ensure maps exist
         xb_len = len(getattr(self, "XB_map", []) or [])
@@ -1069,11 +1228,8 @@ class ReverseSDE(ensemble_DA):
                 XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])  # (n_block, Nens)
                 XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
-                if SAVE_GAUSS_BLOCKS:
-                    try:
-                        _np.save(os.path.join(self.nm.path, GAUSS_DIRNAME, f"XB_block_{block_idx}.npy"), XB_block)
-                    except Exception as e:
-                        print(f"[ReverseSDE][block={block_idx}] WARNING: save failed: {e}")
+                self._write_unified_nc_block(block_idx, XB_block=XB_block, XA_block=XA_block, obs_info=None)
+
             # Publish and return
             self.map_vector_states()
             return
@@ -1091,6 +1247,7 @@ class ReverseSDE(ensemble_DA):
                 XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])
                 XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
+                self._write_unified_nc_block(block_idx, XB_block=XB_block, XA_block=XA_block, obs_info=None)
                 continue
 
             XB = XB_info["XB_b"]            # (n_block, Nens)
@@ -1107,11 +1264,13 @@ class ReverseSDE(ensemble_DA):
             # --- base "no obs" gate ---
             if (OM is None) or ("idx_observed" not in OM) or (OM["idx_observed"] is None):
                 self.XA_map.append(XA_block_fallback)
+                self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block_fallback, obs_info=OM)
                 continue
 
             idx_ob = OM["idx_observed"]
             if idx_ob.size == 0:
                 self.XA_map.append(XA_block_fallback)
+                self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block_fallback, obs_info=OM)
                 continue
             # ============================================================
             # Build obs-space index sets for UG1/VG1/TG1/TRG1@lev7, PSG1
@@ -1145,8 +1304,6 @@ class ReverseSDE(ensemble_DA):
                 ("TG1",  7),
                 ("TRG1", 7),
                 ("PSG1", None),
-                ("WDG1", 7), # Tracking WDG1 at level 7
-                ("WSG1", 7), # Tracking WSG1 at level 7
             ]
 
             for base_name, lev_target in specs:
@@ -1177,6 +1334,7 @@ class ReverseSDE(ensemble_DA):
                         if not keep_mask.any():
                             # Entire block has no kept obs after filtering
                             self.XA_map.append(XA_block_fallback)
+                            self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block_fallback, obs_info=OM)
                             continue
                         # filter all obs-space vectors consistently
                         idx_ob = idx_ob[keep_mask]
@@ -1184,12 +1342,11 @@ class ReverseSDE(ensemble_DA):
                             OM["y"] = OM["y"].reshape(-1)[keep_mask]
                         if "sigma" in OM and OM["sigma"] is not None:
                             OM["sigma"] = OM["sigma"].reshape(-1)[keep_mask]
-                        # Re-calculate vnames_obs for the new idx_ob (IMPORTANT for WDG logic below)
-                        vnames_obs = vnames_block[idx_ob]
 
             # Re-check after filtering
             if idx_ob.size == 0:
                 self.XA_map.append(XA_block_fallback)
+                self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block_fallback, obs_info=OM)
                 continue
 
             # ============================================================
@@ -1209,24 +1366,12 @@ class ReverseSDE(ensemble_DA):
             y = _torch.from_numpy(y_np.astype(_np.float32)).to(device)
             sigma = _torch.from_numpy(sigma_np.astype(_np.float32)).to(device)
 
-            # Identify WDG1 columns for special handling
-            # vnames_obs was updated above (or derived from vnames_block[idx_ob])
-            # Ensure vnames_obs corresponds to the current idx_ob
-            vnames_obs = vnames_block[idx_ob]
-            is_wdg = _torch.tensor((vnames_obs == "WDG1"), device=device, dtype=_torch.bool)
-            
             # --- NORMALIZE FLAG LOGIC ---
             if self.normalize:
                 # Compute stats on device
                 mean_X0 = _torch.mean(X0_obs, dim=0) # (m,)
                 std_X0 = _torch.std(X0_obs, dim=0) # (m,)
                 std_X0 = _torch.clamp(std_X0, min=1e-5) # avoid div/0
-                
-                # --- WDG1 EXCEPTION: Do not normalize angles ---
-                if is_wdg.any():
-                    # For WDG1, set mean=0, std=1 (preserve original radians)
-                    mean_X0 = _torch.where(is_wdg, _torch.zeros_like(mean_X0), mean_X0)
-                    std_X0 = _torch.where(is_wdg, _torch.ones_like(std_X0), std_X0)
             else:
                 # No normalization: mean=0, std=1
                 mean_X0 = _torch.zeros(m, device=device, dtype=_torch.float32)
@@ -1254,22 +1399,9 @@ class ReverseSDE(ensemble_DA):
                 # Use torch.where for conditional logic
                 sigma_eff = _torch.where(_torch.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
                 sigma_n = sigma_eff
-                
-                # --- WDG1 EXCEPTION: Bypass arctan, use raw radians ---
-                if is_wdg.any():
-                    # For WDG1, y is already radians. Don't touch it.
-                    # Normalization was already reset to 0/1 for WDG above.
-                    # So just pass y through for WDG slots.
-                    y_n = _torch.where(is_wdg, y, y_n)
-                    sigma_n = _torch.where(is_wdg, sigma, sigma_n) # Keep sigma as is (radians)
 
                 # Nonlinear ensemble normalization (same transform)
                 X0_obs_n_t = _torch.atan(sf * X0_obs_n)
-                
-                # --- WDG1 EXCEPTION: Bypass arctan for state too ---
-                if is_wdg.any():
-                    X0_obs_n_t = _torch.where(is_wdg, X0_obs_n, X0_obs_n_t)
-                
                 y_n_t = y_n
                 sigma_n_t = sigma_n
 
@@ -1288,11 +1420,6 @@ class ReverseSDE(ensemble_DA):
             xt = _torch.randn((Nens, m), device=device, dtype=_torch.float32)
             # Normalize initial noise (matching vanilla implementation)
             xt = (xt - xt.mean(dim=0)) / (_torch.std(xt, dim=0) + 1e-5)
-            
-            # --- WDG1 EXCEPTION: Initialize WDG noise in range? ---
-            # Actually, standard Gaussian noise is fine for diffusion process, 
-            # as long as we treat the difference circularly later.
-            
             xt_means_hist = _torch.zeros((hist_len, m), device=device, dtype=_torch.float32)
             t = 1.0
 
@@ -1351,16 +1478,14 @@ class ReverseSDE(ensemble_DA):
                     x_obs_step = mean_X0_np[None, :] + std_X0_np[None, :] * xt_np   # (Nens, m)
                     x_norm_step = xt_np # (Nens, m) - Already normalized
 
-                    # Resize storage to match tracking specs
-                    n_tracked = len(specs)
-                    values_mean = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
-                    values_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
+                    values_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
                     
-                    values_norm_mean = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
-                    values_norm_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
                     
-                    values_force_prior_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
-                    values_force_like_gridpoint = _np.full((n_tracked, Nens), _np.nan, dtype=_np.float32)
+                    values_force_prior_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_force_like_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
@@ -1368,9 +1493,6 @@ class ReverseSDE(ensemble_DA):
                         
                         # 1. Always track spatial mean
                         sub = x_obs_step[:, obs_idx]     # (Nens, n_pts)
-                        # For WDG, spatial mean is tricky because it's circular. 
-                        # For simple visualization, standard mean is okay-ish, or just skip.
-                        # We'll use standard mean for now as basic diag.
                         values_mean[vidx, :] = sub.mean(axis=1).astype(_np.float32)
                         
                         sub_norm = x_norm_step[:, obs_idx]
@@ -1432,9 +1554,10 @@ class ReverseSDE(ensemble_DA):
                                 if found_target:
                                     break
                             
+
                             
                         if (i % 20) == 0 or i == 1:
-                            var_list = ["UG1","VG1","TG1","TRG1","PSG1", "WDG1", "WSG1"]
+                            var_list = ["UG1","VG1","TG1","TRG1","PSG1"]
                             # Only print if we actually have values (not all NaN)
                             # Check first element to see if it's NaN
                             if not _np.isnan(values_mean[vidx, 0]):
@@ -1442,28 +1565,10 @@ class ReverseSDE(ensemble_DA):
                                 print(f"[{label}] pstep={i:03d} {var_list[vidx]} mean={row.mean():.4e}")
 
                     # Write into NetCDF only if this block had tracked obs
-                    # Since we expanded to 6 vars, and file has dimension 5?
-                    # Wait, we created dimension 5 in init: nc_init.createDimension("var", 5)
-                    # We need to resize the file or handle error if user didn't delete old file.
-                    # Since I cannot delete user files typically, I should try to write safely.
-                    # If I try to write 6th var to 5-dim file, it will crash.
-                    # I will check dim size in `nc`:
-                    nc_var_dim = nc.dimensions['var'].size
-                    
-                    if nc_var_dim >= 6:
-                        xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean
-                        xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint
-                        xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean
-                        xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint
-                    else:
-                        # Fallback for old file structure: write only first 5
-                        xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean[:5]
-                        xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint[:5]
-                        xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean[:5]
-                        xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint[:5]
-                        if i == 1 and block_idx == 0:
-                            print(f"[ReverseSDE] WARNING: sde_tracking.nc has 5 vars, but we have 6. WDG1 will not be saved.")
-
+                    xt_state_mean[cycle_k, block_idx, i-1, :, :] = values_mean
+                    xt_state_gridpoint[cycle_k, block_idx, i-1, :, :] = values_gridpoint
+                    xt_norm_mean[cycle_k, block_idx, i-1, :, :] = values_norm_mean
+                    xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint
 
                 # ====== SDE UPDATE ======
                 prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
@@ -1472,44 +1577,11 @@ class ReverseSDE(ensemble_DA):
                 if self.nonlinear_obs:
                     sf = float(self.scalefact)
                     h_xt = _torch.atan(sf * xt)
-                    
-                    # --- WDG1 EXCEPTION: Bypass ATAN for state ---
-                    if is_wdg.any():
-                        h_xt = _torch.where(is_wdg, xt, h_xt)
-
-                    # Compute Difference
-                    diff = h_xt - y_n_t
-                    
-                    # --- WDG1 EXCEPTION: Circular Difference ---
-                    if is_wdg.any():
-                         # Circular Diff: (a - b + pi) % 2pi - pi
-                         pi = _torch.tensor(3.1415926535, device=device)
-                         wdg_diff = (diff + pi) % (2 * pi) - pi
-                         diff = _torch.where(is_wdg, wdg_diff, diff)
-
-                    # Jacobian Factor (derivative of atan behavior or 1.0)
-                    # For arctan: 1 / (1+(sf*xt)^2) * sf
-                    # For WDG: 1.0 (linear-like in angle space)
-                    jac = sf / (1.0 + (sf * xt) ** 2)
-                    
-                    if is_wdg.any():
-                        grad_wdg = _torch.ones_like(xt) # Gradient is 1 for direct observation
-                        jac = _torch.where(is_wdg, grad_wdg, jac)
-
-                    like_score = -(diff) / (sigma_n_t ** 2) * jac
-                    
+                    like_score = -(h_xt - y_n_t) / (sigma_n_t ** 2) * (
+                        sf / (1.0 + (sf * xt) ** 2)
+                    )
                 else:
-                    # Linear Case
-                    diff = xt - y_n_t
-                    # --- WDG1 check also in linear case? ---
-                    # Usually "Linear" implies we treat everything as R^n.
-                    # But if we want circularity even in "Linear" mode:
-                    if is_wdg.any():
-                         pi = _torch.tensor(3.1415926535, device=device)
-                         wdg_diff = (diff + pi) % (2 * pi) - pi
-                         diff = _torch.where(is_wdg, wdg_diff, diff)
-                    
-                    like_score = -(diff) / (sigma_n_t ** 2)
+                    like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
                 
                 like_tau = tau * like_score
                 pull = (g ** 2) * like_tau
@@ -1648,67 +1720,11 @@ class ReverseSDE(ensemble_DA):
                 xt = xt_next
                 t = max(0.0, t - dt)
 
-            # [USER-REQUEST] Generate plot for pressure at (27,32) if data was collected
-            if do_plot_pressure and len(track_pressure_data["steps"]) > 0:
-                try:
-                    import matplotlib.pyplot as plt
-                    # Use a non-interactive backend to avoid display issues
-                    plt.switch_backend('Agg')
-                    
-                    steps = track_pressure_data["steps"]
-                    xt_arr = _np.array(track_pressure_data["xt"])     # (T, Nens)
-                    prior_arr = _np.array(track_pressure_data["prior"])
-                    like_arr = _np.array(track_pressure_data["like"])
-                    
-                    if xt_arr.ndim == 2:
-                        fig, axs = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
-                        
-                        # 1. XT
-                        xt_mean = xt_arr.mean(axis=1)
-                        xt_std = xt_arr.std(axis=1)
-                        axs[0].plot(steps, xt_mean, label='Mean XT')
-                        axs[0].fill_between(steps, xt_mean - xt_std, xt_mean + xt_std, alpha=0.3)
-                        axs[0].set_title(f"Cycle {cycle_k} PSG1 (27,32): State")
-                        axs[0].set_ylabel("XT (Normalized)")
-                        axs[0].grid(True)
-                        axs[0].legend()
-
-                        # 2. Prior
-                        prior_mean = prior_arr.mean(axis=1)
-                        prior_std = prior_arr.std(axis=1)
-                        axs[1].plot(steps, prior_mean, color='orange', label='Mean Prior')
-                        axs[1].fill_between(steps, prior_mean - prior_std, prior_mean + prior_std, color='orange', alpha=0.3)
-                        axs[1].set_title("Prior Term")
-                        axs[1].set_ylabel("Force")
-                        axs[1].grid(True)
-                        axs[1].legend()
-
-                        # 3. Likelihood
-                        like_mean = like_arr.mean(axis=1)
-                        like_std = like_arr.std(axis=1)
-                        axs[2].plot(steps, like_mean, color='green', label='Mean Likelihood')
-                        axs[2].fill_between(steps, like_mean - like_std, like_mean + like_std, color='green', alpha=0.3)
-                        axs[2].set_title("Likelihood Score")
-                        axs[2].set_ylabel("Force")
-                        axs[2].set_xlabel("Pseudo-step")
-                        axs[2].grid(True)
-                        axs[2].legend()
-
-                        # Create subfolder for plots
-                        plot_dir = os.path.join(self.nm.path, "debug_plots")
-                        os.makedirs(plot_dir, exist_ok=True)
-                        
-                        out_path = os.path.join(plot_dir, f"debug_cycle{cycle_k}_psg1_27_32.png")
-                        plt.tight_layout()
-                        plt.savefig(out_path)
-                        plt.close(fig)
-                        print(f"[ReverseSDE] Saved debug plot to {out_path}")
-                except Exception as e:
-                    print(f"[ReverseSDE] Plotting failed: {e}")
             
             # Produce XA_block (either fallback or from xt)
             if not block_numeric_ok:
                 self.XA_map.append(XA_block_fallback)
+                self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block_fallback, obs_info=OM)
                 continue
 
             # Convert back to NumPy for final output
@@ -1728,15 +1744,11 @@ class ReverseSDE(ensemble_DA):
 
             XA_block = self.covariance_inflation(x_full.T)   # (n_block, Nens)
             self.XA_map.append(XA_block)
+            self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block, obs_info=OM)
 
             # (optional) save clean XB for gaussianity if enabled
-            if SAVE_GAUSS_BLOCKS:
-                try:
-                    path_out = os.path.join(self.nm.path, GAUSS_DIRNAME, f"XB_block_{block_idx}.npy")
-                    _np.save(path_out, XB)
-                    print(f"[ReverseSDE][{label}] saved BACKGROUND block for gaussianity: {path_out}")
-                except Exception as e:
-                    print(f"[ReverseSDE][{label}] WARNING: save failed: {e}")
+            # (Removed SAVE_GAUSS_BLOCKS)
+
         nc.close()
         # Final sanity: if XA_map is short, pad with inflated background per block
         if len(self.XA_map) < mc_len:
@@ -1745,9 +1757,12 @@ class ReverseSDE(ensemble_DA):
                 XB_block = self.get_ensemble_block(self.nm.mask_cor[block_idx])
                 XA_block = self.covariance_inflation(XB_block)
                 self.XA_map.append(XA_block)
+                # Unified write for padding blocks
+                self._write_unified_nc_block(block_idx, XB_block=XB_block, XA_block=XA_block, obs_info=None)
+
         self.map_vector_states()
         # >>> write one unified netcdf per requested field, now that analysis exists
-        self._write_unified_nc_reverseSDE(cycle_k=self.current_cycle_k)
+        # self._write_unified_nc_reverseSDE(cycle_k=self.current_cycle_k)
 
 class sequential_method:
       
@@ -1762,12 +1777,3 @@ class sequential_method:
           if self.method_name=='LEnKF': return LEnKF(nm, infla, Nens);
           if self.method_name == 'ReverseSDE':return ReverseSDE(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact)
           
-
-
-
-    
-    
-    
-    
-        
-    
