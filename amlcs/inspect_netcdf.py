@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-General-purpose NetCDF file inspector.
-Displays metadata, variable information, and basic statistics.
+DA Output Inspector
+===================
+Quickly checks `unified_cycle*.nc` files to verify if Data Assimilation (DA) worked.
 
-Configure the file path in the CONFIGURATION section below and run:
-    python inspect_netcdf.py
+Configuration:
+    Modify PATHS_TO_INSPECT below.
 """
 
+import os
+import glob
 import numpy as np
 from netCDF4 import Dataset
 
@@ -14,211 +17,209 @@ from netCDF4 import Dataset
 # ========================= CONFIGURATION ====================================
 ###############################################################################
 
-# Path to the NetCDF file to inspect
-NETCDF_FILE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/unified_cycle0.nc"
+# List of files or directories to inspect
+PATHS_TO_INSPECT = ["/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_only_m2/data/unified_cycle1.nc",
+"/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_ps_only_obs/data/unified_cycle1.nc"]
+    # Add more paths here (can be directory or specific file)
 
-# Show sample values for small arrays?
-SHOW_SAMPLE = False
+
+# Set to True for more detailed output
+VERBOSE = False
 
 ###############################################################################
 # ========================= END CONFIGURATION ================================
 ###############################################################################
 
-
-def print_section(title):
-    """Print a formatted section header."""
-    print("\n" + "=" * 80)
-    print(f"  {title}")
-    print("=" * 80)
-
-
-def print_global_metadata(nc):
-    """Print global attributes (metadata)."""
-    print_section("GLOBAL METADATA")
+def get_stats(arr):
+    """Compute robust statistics."""
+    if arr is None: return None
+    arr = np.asanyarray(arr)
+    if arr.size == 0: return None
     
-    attrs = nc.ncattrs()
-    if not attrs:
-        print("  No global attributes found.")
-        return
+    # Check for non-finites
+    if not np.isfinite(arr).all():
+        n_nan = np.isnan(arr).sum()
+        n_inf = np.isinf(arr).sum()
+        return {'valid': False, 'n_nan': n_nan, 'n_inf': n_inf}
     
-    for attr_name in attrs:
-        attr_value = getattr(nc, attr_name)
-        print(f"  {attr_name}: {attr_value}")
+    return {
+        'valid': True,
+        'min': np.min(arr),
+        'max': np.max(arr),
+        'mean': np.mean(arr),
+        'rms': np.sqrt(np.mean(arr**2)),
+        'abs_max': np.max(np.abs(arr))
+    }
 
-
-def print_dimensions(nc):
-    """Print dimension information."""
-    print_section("DIMENSIONS")
-    
-    if not nc.dimensions:
-        print("  No dimensions found.")
-        return
-    
-    for dim_name, dim in nc.dimensions.items():
-        size_str = f"{len(dim)}" if not dim.isunlimited() else f"{len(dim)} (UNLIMITED)"
-        print(f"  {dim_name}: {size_str}")
-
-
-def get_stats(data):
-    """Calculate statistics for numerical data."""
+def inspect_file(filepath, verbose=False, label=""):
+    print(f"\n>> Inspecting: {label} ({os.path.basename(filepath)})")
+    print(f"   Full Path: {filepath}")
     try:
-        # Flatten the data
-        flat_data = np.asarray(data).flatten()
-        
-        # Count total elements
-        total = flat_data.size
-        
-        # Count NaNs
-        nan_count = np.isnan(flat_data).sum()
-        nan_pct = (nan_count / total * 100) if total > 0 else 0
-        
-        # Calculate statistics on non-NaN values
-        valid_data = flat_data[~np.isnan(flat_data)]
-        
-        if valid_data.size > 0:
-            stats = {
-                'total': total,
-                'nan_count': nan_count,
-                'nan_pct': nan_pct,
-                'valid_count': valid_data.size,
-                'min': np.min(valid_data),
-                'max': np.max(valid_data),
-                'mean': np.mean(valid_data),
-                'std': np.std(valid_data),
-                'median': np.median(valid_data)
-            }
-        else:
-            stats = {
-                'total': total,
-                'nan_count': nan_count,
-                'nan_pct': nan_pct,
-                'valid_count': 0,
-                'min': np.nan,
-                'max': np.nan,
-                'mean': np.nan,
-                'std': np.nan,
-                'median': np.nan
-            }
-        
-        return stats
-    except Exception as e:
-        return {'error': str(e)}
-
-
-def print_variables(nc, show_sample=False):
-    """Print variable information and statistics."""
-    print_section("VARIABLES")
-    
-    if not nc.variables:
-        print("  No variables found.")
-        return
-    
-    for var_name, var in nc.variables.items():
-        print(f"\n  Variable: {var_name}")
-        print(f"    Shape: {var.shape}")
-        print(f"    Dimensions: {var.dimensions}")
-        print(f"    Data Type: {var.dtype}")
-        
-        # Print variable attributes
-        var_attrs = var.ncattrs()
-        if var_attrs:
-            print("    Attributes:")
-            for attr_name in var_attrs:
-                attr_value = getattr(var, attr_name)
-                print(f"      {attr_name}: {attr_value}")
-        
-        # Calculate statistics for numerical data
-        # Check if dtype has 'kind' attribute (numpy dtypes do, string types don't)
-        if hasattr(var.dtype, 'kind') and var.dtype.kind in ['f', 'i', 'u']:  # float, int, unsigned int
-            try:
-                # For large arrays, sample or use chunking
-                if var.size > 1e7:  # If more than 10M elements
-                    print("    Statistics: (Large array - showing sample stats)")
-                    # Sample the data
-                    if len(var.shape) == 1:
-                        sample = var[::max(1, var.size // 10000)]
-                    elif len(var.shape) == 2:
-                        step = max(1, var.shape[0] // 100)
-                        sample = var[::step, ::step]
-                    elif len(var.shape) == 3:
-                        step = max(1, var.shape[0] // 10)
-                        sample = var[::step, ::step, ::step]
-                    else:
-                        # Just take first slice for higher dimensions
-                        sample = var[0]
-                    
-                    stats = get_stats(sample)
-                else:
-                    data = var[:]
-                    stats = get_stats(data)
-                
-                if 'error' in stats:
-                    print(f"    Statistics: Error - {stats['error']}")
-                else:
-                    print(f"    Statistics:")
-                    print(f"      Total elements: {stats['total']}")
-                    print(f"      Valid elements: {stats['valid_count']}")
-                    print(f"      NaN count: {stats['nan_count']} ({stats['nan_pct']:.2f}%)")
-                    if stats['valid_count'] > 0:
-                        print(f"      Min: {stats['min']:.6e}")
-                        print(f"      Max: {stats['max']:.6e}")
-                        print(f"      Mean: {stats['mean']:.6e}")
-                        print(f"      Std: {stats['std']:.6e}")
-                        print(f"      Median: {stats['median']:.6e}")
-                
-                # Optionally show a sample of the data
-                if show_sample and var.size <= 1000:
-                    print(f"    Sample values: {var[:5] if var.size > 5 else var[:]}")
-                    
-            except Exception as e:
-                print(f"    Statistics: Could not compute - {e}")
-        else:
-            print(f"    Statistics: Non-numerical data type")
-
-
-def inspect_netcdf(filepath, show_sample=False):
-    """Main inspection function."""
-    try:
-        print(f"\nInspecting NetCDF file: {filepath}")
-        print(f"File size: {get_file_size(filepath)}")
-        
         with Dataset(filepath, 'r') as nc:
-            # Print global metadata
-            print_global_metadata(nc)
+            # Check Dimensions
+            if 'lat' in nc.dimensions and 'lon' in nc.dimensions:
+                nlat = len(nc.dimensions['lat'])
+                nlon = len(nc.dimensions['lon'])
+                print(f"   Grid: {nlat}x{nlon}")
             
-            # Print dimensions
-            print_dimensions(nc)
+            # Identify Variables (looking for pairs like xb_mean_VAR_levL and xa_mean_VAR_levL)
+            vars_found = {} # (var, lev) -> {xb, xa, truth}
             
-            # Print variables with statistics
-            print_variables(nc, show_sample=show_sample)
-            
-        print("\n" + "=" * 80)
-        print("  Inspection complete!")
-        print("=" * 80 + "\n")
-        
+            for vname in nc.variables:
+                parts = vname.split('_')
+                if len(parts) >= 4 and parts[1] == 'mean':
+                    prefix = parts[0] # xb or xa
+                    var_name = parts[2]
+                    lev_tag = parts[3]
+                    key = (var_name, lev_tag)
+                    if key not in vars_found: vars_found[key] = {}
+                    vars_found[key][prefix] = vname
+                elif parts[0] == 'truth':
+                    var_name = parts[1]
+                    lev_tag = parts[2]
+                    key = (var_name, lev_tag)
+                    if key not in vars_found: vars_found[key] = {}
+                    vars_found[key]['truth'] = vname
+
+            if not vars_found:
+                # Fallback: check for raw state variables (e.g. UG0, UG1...) in Free Run files
+                # If this is a free run file, we try to find the reference solution
+                is_free_run = "free_run_" in os.path.basename(filepath)
+                if is_free_run:
+                     # Attempt to construct reference path
+                     # ../free_run/free_run_X.nc  ->  ../snapshots/reference_solution_X.nc
+                     dirname = os.path.dirname(filepath)
+                     parent = os.path.dirname(dirname)
+                     basename = os.path.basename(filepath)
+                     # assume format free_run_X.nc
+                     cycle_idx = basename.split('_')[-1].split('.')[0]
+                     ref_path = os.path.join(parent, "snapshots", f"reference_solution_{cycle_idx}.nc")
+                     
+                     if os.path.exists(ref_path):
+                         print(f"   Comparison: vs {os.path.basename(ref_path)}")
+                         try:
+                             with Dataset(ref_path, 'r') as nc_ref:
+                                 # List variables common to both
+                                 print(f"   {'Variable':<10} {'Level':<6} | {'Incr(RMS)':<10} {'Incr(Max)':<10} | {'Err(RMS)':<10} | {'Status':<10}")
+                                 print("   " + "-"*75)
+                                 
+                                 # We just look for standard vars: UG0, UG1, VG0, VG1, etc.
+                                 std_vars = ['UG0', 'UG1', 'VG0', 'VG1', 'TG0', 'TG1', 'PSG0', 'PSG1', 'TRG0', 'TRG1']
+                                 # Also wind if present?
+                                 
+                                 for var in std_vars:
+                                     if var in nc.variables and var in nc_ref.variables:
+                                         # Get data
+                                         res_val = nc.variables[var][:]
+                                         ref_val = nc_ref.variables[var][:]
+                                         
+                                         # Compute Diff (Error)
+                                         diff = res_val - ref_val
+                                         s_diff = get_stats(diff)
+                                         
+                                         err_rms = f"{s_diff['rms']:.2e}" if s_diff['valid'] else "NaN"
+                                         
+                                         # For free run, Incr is N/A (no analysis update)
+                                         # OR we could show change from previous step? No, just show Error.
+                                         incr_rms, incr_max = "N/A", "N/A"
+                                         
+                                         # Find level if applicable
+                                         lev_str = "lev?"
+                                         if res_val.ndim == 3: # (lev, lat, lon)
+                                             # Just loop levels? Or average?
+                                             # Original script showed per level.
+                                             # Let's show RMSE per level
+                                             nlev = res_val.shape[0]
+                                             for l in range(nlev):
+                                                 diff_l = diff[l]
+                                                 s_l = get_stats(diff_l)
+                                                 err_l = f"{s_l['rms']:.2e}"
+                                                 print(f"   {var:<10} lev{l:<3} | {incr_rms:<10} {incr_max:<10} | {err_l:<10} | {'OK':<10}")
+                                         elif res_val.ndim == 4: # (1, lev, lat, lon) or (lev, lat, lon, ?)
+                                              # Humidity TRG is (1, 8, 32, 64)
+                                              if var.startswith('TRG'):
+                                                 nlev = res_val.shape[1]
+                                                 for l in range(nlev):
+                                                     diff_l = diff[0, l]
+                                                     s_l = get_stats(diff_l)
+                                                     err_l = f"{s_l['rms']:.2e}"
+                                                     print(f"   {var:<10} lev{l:<3} | {incr_rms:<10} {incr_max:<10} | {err_l:<10} | {'OK':<10}")
+                                         else:
+                                             # 2D var like PSG
+                                             print(f"   {var:<10} {'sfc':<6} | {incr_rms:<10} {incr_max:<10} | {err_rms:<10} | {'OK':<10}")
+                                             
+                                 return # Done with free run file
+                         except Exception as e:
+                             print(f"   Failed to open reference: {e}")
+                     else:
+                         print(f"   Reference file not found: {ref_path}")
+                         return
+                
+                print("   No standard DA variables found (xb_mean_*, xa_mean_*).")
+                return
+
+            print(f"   {'Variable':<10} {'Level':<6} | {'Incr(RMS)':<10} {'Incr(Max)':<10} | {'Err(RMS)':<10} | {'Status':<10}")
+            print("   " + "-"*75)
+
+            sorted_keys = sorted(vars_found.keys(), key=lambda x: (x[1], x[0]))
+            for var, lev in sorted_keys:
+                vinfo = vars_found[(var, lev)]
+                xb_name, xa_name, tr_name = vinfo.get('xb'), vinfo.get('xa'), vinfo.get('truth')
+                
+                status, incr_rms, incr_max, err_rms = "SKIP", "N/A", "N/A", "N/A"
+                if xb_name and xa_name:
+                    try:
+                        xb = nc.variables[xb_name][:]
+                        xa = nc.variables[xa_name][:]
+                        s_xb, s_xa = get_stats(xb), get_stats(xa)
+                        
+                        if not s_xb['valid'] or not s_xa['valid']:
+                            status = "NaN/Inf!"
+                        else:
+                            incr = xa - xb
+                            s_incr = get_stats(incr)
+                            incr_rms, incr_max = f"{s_incr['rms']:.2e}", f"{s_incr['abs_max']:.2e}"
+                            status = "No Update" if s_incr['abs_max'] == 0.0 else "OK"
+                            
+                            if tr_name:
+                                tr = nc.variables[tr_name][:]
+                                s_err = get_stats(xa - tr)
+                                err_rms = f"{s_err['rms']:.2e}" if s_err['valid'] else "NaN(Tr)"
+                    except Exception:
+                        status = "Error"
+                print(f"   {var:<10} {lev:<6} | {incr_rms:<10} {incr_max:<10} | {err_rms:<10} | {status:<10}")
     except Exception as e:
-        print(f"\nError inspecting file: {e}")
-        import traceback
-        traceback.print_exc()
-        return
-
-
-def get_file_size(filepath):
-    """Get human-readable file size."""
-    import os
-    size = os.path.getsize(filepath)
-    
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size < 1024.0:
-            return f"{size:.2f} {unit}"
-        size /= 1024.0
-    
-    return f"{size:.2f} PB"
-
+        print(f"   Failed to open/read: {e}")
 
 def main():
-    inspect_netcdf(NETCDF_FILE, show_sample=SHOW_SAMPLE)
+    all_files = []
+    # Identify labels from paths
+    labeled_files = []
+    
+    for path in PATHS_TO_INSPECT:
+        if os.path.isfile(path):
+            labeled_files.append((path, path))
+        elif os.path.isdir(path):
+            files = glob.glob(os.path.join(path, "unified_cycle*.nc"))
+            files.sort(key=lambda x: int(os.path.basename(x).split('cycle')[1].split('.')[0]) if 'cycle' in x else 0)
+            if not files:
+                files = glob.glob(os.path.join(path, "*.nc"))
+                files.sort()
+            for f in files:
+                labeled_files.append((f, path)) # Label is directory
+        else:
+            files = glob.glob(path)
+            files.sort()
+            for f in files:
+                labeled_files.append((f, path))
 
+    if not labeled_files:
+        print("No files discovered to inspect. Please check PATHS_TO_INSPECT.")
+        return
+
+    print(f"Discovered {len(labeled_files)} files.")
+    for f, label in labeled_files:
+        inspect_file(f, VERBOSE, label=label)
 
 if __name__ == "__main__":
     main()

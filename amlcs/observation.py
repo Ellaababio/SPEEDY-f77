@@ -58,6 +58,8 @@ class observation:
           self.obs_H = [];
           self.obs_n = [];
           self.obs_m = [];
+          self.wind_obs = {} # Dictionary to store wind obs info: { 'WDG1': {lev: {'H':..., 'n':...}}, 'WSG1': ... }
+
           for mesh_, mask_ in zip(mesh, mask): #moving across meshes
               n_mesh = 0;
               m_mesh = 0;
@@ -71,7 +73,14 @@ class observation:
                   lat, lon = res_info[0], res_info[1];
                   #print(f'n[0] reads {n[0]}');
                   var_index = n[0][0]; #n[0] = [var_index, level]
-                  if self.obs_var[var_index]: #If observations are available in this layer and this variable
+                  
+                  # Check if observations are available in this layer and this variable
+                  # Handle case where obs_var is shorter than number of model variables (e.g. WDG1/WSG1 added but not in runner csv)
+                  is_observed = False
+                  if var_index < len(self.obs_var):
+                      is_observed = self.obs_var[var_index]
+                  
+                  if is_observed: 
                      H_l = self.get_stations_variables(lat, lon, n_mesh, s);
                      m_mesh = len(H_l);
                      H_vect.extend(H_l);
@@ -80,6 +89,39 @@ class observation:
               self.obs_H.append(np.array(H_vect));
               self.obs_n.append(n_mesh);
               self.obs_m.append(o_data);
+          
+          # -------------------------------------------------------------------
+          # Capture Wind Observations (WDG1/WSG1) - Indices 10 and 11
+          # These are NOT in the state vector (mask_cor), so we handle them separately.
+          # We assume they exist on the same grid (lat, lon) as other variables.
+          # -------------------------------------------------------------------
+          wind_map = {10: 'WDG1', 11: 'WSG1'}
+          for w_idx, w_name in wind_map.items():
+              if w_idx < len(self.obs_var) and self.obs_var[w_idx]:
+                  self.wind_obs[w_name] = {}
+                  # We assume wind obs are available at all levels 0..7
+                  # We define their "H" relative to a theoretical grid of size lat*lon
+                  # Since they are not in the state vector, we can't build a global sparse H matrix for them relative to 'x'.
+                  # Instead, we just store the station indices relative to a single level's grid.
+                  
+                  # Use standard resolution (t21: 32x64)
+                  # We can get this from nm.gs or just assume it matches UG1
+                  lat, lon = gr.lat, gr.lon
+                  
+                  # Get station indices for a single level (p=0)
+                  # Note: 's' (stride) is passed to build_observational_network
+                  stations = self.get_stations_variables(lat, lon, 0, s)
+                  m_obs = len(stations)
+                  
+                  for lev in range(8): # 8 levels
+                      self.wind_obs[w_name][lev] = {
+                          'stations': stations,
+                          'm': m_obs,
+                          'lat': lat,
+                          'lon': lon
+                      }
+                  # print(f"Captured {w_name} observations: {m_obs} stations per level.")
+
           #print('* self.obs_H {0}'.format(self.obs_H));
           #print('* self.obs_n {0}'.format(self.obs_n));
           #print('* self.obs_m {0}'.format(self.obs_m));
@@ -118,15 +160,9 @@ class observation:
                   try:
                       err_obm = self.err_obs[variable]
                   except IndexError:
-                      if variable == 10:
-                          print(f"Warning: No obs error specified for WDG1 (idx {variable}). Using default 1.0 rad.")
-                          err_obm = 1.0
-                      elif variable == 11:
-                          print(f"Warning: No obs error specified for WSG1 (idx {variable}). Using default 1.0 m/s.")
-                          err_obm = 1.0
-                      else:
-                          print(f"Warning: No obs error specified for var idx {variable}. Using default 1.0")
-                          err_obm = 1.0
+                      # WDG1/WSG1 (10/11) should not be reached here in standard loop
+                      print(f"Warning: No obs error specified for var idx {variable}. Using default 1.0")
+                      err_obm = 1.0
                   m = o[1];
                   I = np.arange(m_om, m_om+m);
                   Ig.extend(list(I));
@@ -149,7 +185,7 @@ class observation:
               
               self.obs_R_sparse.append({'R':R_sparse, 'Ri':Rinv_sparse, 'Rs':Rsqr_sparse, 'm':m_om});
            
- 
+
           
           
       
@@ -159,10 +195,21 @@ class observation:
           mask_cor = nm.mask_cor;
           var_names = nm.var_names;
           self.y_obs = [];
+          
+          # Prepare wind errors if needed
+          wind_map = {10: 'WDG1', 11: 'WSG1'}
+          wind_errors = {}
+          for w_idx, w_name in wind_map.items():
+              if w_name in self.wind_obs:
+                   try:
+                       wind_errors[w_name] = self.err_obs[w_idx]
+                   except Exception:
+                       wind_errors[w_name] = 1.0
+          
           for s in range(0, M):
               xs = rs.x_ref[s]; 
               y_ma = [];
-              for ma, R_data, H_sparse in zip(mask_cor, self.obs_R_sparse, self.obs_H_sparse):
+              for block_idx, (ma, R_data, H_sparse) in enumerate(zip(mask_cor, self.obs_R_sparse, self.obs_H_sparse)):
                   x_data = [];
                   for m in ma:
                       var_info = m[0];
@@ -186,15 +233,78 @@ class observation:
                   # Apply observation operator Hx
                   Hx = H_sparse @ x_data
                   
-                  # Apply nonlinear operator if requested
+                  # Apply nonlinear operator if requested (Standard Vars)
                   if self.nonlinear_obs:
-                      Hx = np.arctan(self.scalefact * Hx)
+                      # Determine which observations are linear vs WDG/WSG
+                      # Note: With WDG/WSG removed from state vector, this loop only sees linear vars
+                      # UNLESS we have other nonlinear vars in the future.
+                      pass 
                   
                   # Add noise
                   y = Hx + R_sqrt @ np.random.randn(m_obs,1);
                   y_ma.append(y);
               
-              self.y_obs.append(y_ma); 
+              # ----------------------------------------------------------------
+              # Generate Synthetic Wind Observations (stored in self.wind_obs)
+              # ----------------------------------------------------------------
+              # We need multiple instances of wind obs (one per time step)
+              # But self.wind_obs dict structure currently doesn't hold time.
+              # We should append wind obs to y_ma? No, y_ma aligns with blocks.
+              # We need to store wind obs separately or append a special "Wind Block"?
+              # 
+              # Decision: Store wind obs in self.y_obs as a separate entry or dictionary?
+              # Current self.y_obs is a list of lists: y_obs[time][block].
+              # Standard ReverseSDE expects y_obs[k][block].
+              # 
+              # Better: Add a "wind_obs_data" dictionary to self that stores [time][var][lev] -> data
+              if not hasattr(self, 'y_wind_obs'):
+                   self.y_wind_obs = [] # List of dicts, one per time step
+              
+              y_wind_t = {}
+              
+              # Calculate wind fields from Reference State (xs)
+              # We need UG1 (idx 5) and VG1 (idx 6)
+              # Assuming standard var_names order: 
+              # 'UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1'
+              try:
+                  u_idx = var_names.index('UG1')
+                  v_idx = var_names.index('VG1')
+                  ug1_ref = xs[u_idx]
+                  vg1_ref = xs[v_idx]
+                  
+                  for w_name in self.wind_obs: # WDG1, WSG1
+                      y_wind_t[w_name] = {}
+                      err_std = wind_errors.get(w_name, 1.0)
+                      
+                      for lev in range(8):
+                          # Get stations
+                          stations = self.wind_obs[w_name][lev]['stations']
+                          
+                          # Extract U/V at stations
+                          u_lev = ug1_ref[lev,:,:].flatten()[stations]
+                          v_lev = vg1_ref[lev,:,:].flatten()[stations]
+                          
+                          if w_name == 'WDG1':
+                              # True Wind Direction
+                              true_wdg = np.arctan2(v_lev, u_lev)
+                              # Add Noise
+                              obs_wdg = true_wdg + err_std * np.random.randn(len(stations))
+                              # Wrap to [-pi, pi]? ReverseSDE handles this via sin/cos score.
+                              y_wind_t[w_name][lev] = obs_wdg
+                              
+                          elif w_name == 'WSG1':
+                              # True Wind Speed
+                              true_wsg = np.sqrt(u_lev**2 + v_lev**2)
+                              # Add Noise
+                              obs_wsg = true_wsg + err_std * np.random.randn(len(stations))
+                              # Ensure positive? (Maybe clip, but simple noise for now)
+                              y_wind_t[w_name][lev] = obs_wsg
+                              
+              except Exception as e:
+                  print(f"Warning: Could not generate synthetic wind obs: {e}")
+
+              self.y_obs.append(y_ma);
+              self.y_wind_obs.append(y_wind_t)
           
           print('* ENDJ - Synthetic observations have been created');
           

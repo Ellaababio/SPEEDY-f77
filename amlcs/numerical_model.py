@@ -19,7 +19,7 @@ class numerical_model:
       initial_condition = None;
       Nens = None;
 
-      var_names = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1', 'WDG1', 'WSG1'];
+      var_names = ['UG0','VG0','TG0','TRG0','PSG0','UG1','VG1','TG1','TRG1','PSG1'];
 
       x_ic = None;
       X = None;
@@ -83,57 +83,8 @@ class numerical_model:
            x = [];
            #print('dimension {0}'.format(x.shape));
            nc_fid = Dataset(nc_f, 'r');
-           
-           # Pre-load UG1/VG1 for WDG1 calculation if needed
-           u_idx = -1
-           v_idx = -1
-           try:
-             u_idx = var_names.index('UG1')
-             v_idx = var_names.index('VG1')
-           except:
-             pass
-
-           ug1_data = None
-           vg1_data = None
-
            for v in range(0,n_vars):
                var_name = var_names[v];
-               
-               # Virtual Variable: WSG1
-               if var_name == 'WSG1':
-                   if u_idx != -1 and v_idx != -1 and len(x) > v_idx:
-                        ug1 = x[u_idx]
-                        vg1 = x[v_idx]
-                        # Compute WSG1: sqrt(UG1^2 + VG1^2)
-                        wsg1 = np.sqrt(ug1**2 + vg1**2)
-                        x.append(wsg1)
-                   else:
-                        print("Warning: Could not compute WSG1, missing UG1/VG1. Appending zeros.")
-                        x.append(np.zeros_like(x[0]))
-                   continue
-
-               # Virtual Variable: WDG1
-               if var_name == 'WDG1':
-                   # Ensure we have UG1 and VG1 loaded
-                   # Note: In standard var_names order, UG1 and VG1 come before WDG1, so they should be in 'x' already.
-                   # But let's be robust and grab from file if not in 'x' yet (though x is list of arrays).
-                   
-                   # Assuming sequential load order: UG1 is index 5, VG1 is index 6, WDG1 is index 10.
-                   # So x[5] and x[6] should be populated.
-                   if u_idx != -1 and v_idx != -1 and len(x) > v_idx:
-                        ug1 = x[u_idx]
-                        vg1 = x[v_idx]
-                        # Compute WDG1: arctan2(VG1, UG1)
-                        # Result is in radians [-pi, pi]
-                        wdg1 = np.arctan2(vg1, ug1)
-                        x.append(wdg1)
-                   else:
-                        # Fallback if UG1/VG1 not found (should not happen in standard setup)
-                        print("Warning: Could not compute WDG1, missing UG1/VG1. Appending zeros.")
-                        # Need shape.. guess from TG1?
-                        x.append(np.zeros_like(x[0])) 
-                   continue
-
                #print(var_name);
                var_full = nc_fid.variables[var_name][:];
                if 'TRG' in var_names[v]:
@@ -211,8 +162,6 @@ class numerical_model:
           TG1 = ds.createVariable('TG1', np.float64, ('lev','lat', 'lon'));
           TRG1 = ds.createVariable('TRG1', np.float64, ('ntr','lev', 'lat', 'lon'))
           PSG1 = ds.createVariable('PSG1', np.float64, ('lat', 'lon',))
-          WDG1 = ds.createVariable('WDG1', np.float64, ('lev','lat', 'lon'));
-          WSG1 = ds.createVariable('WSG1', np.float64, ('lev','lat', 'lon'));
           
           #print([UG0.shape, xs[0].shape]);
 
@@ -228,13 +177,8 @@ class numerical_model:
           TG1[:,:,:] = xs[7][:,:,:];
           TRG1[0,:,:,:] = xs[8][:,:,:];
           PSG1[:,:] = xs[9][:,:];
-          if len(xs) > 10:
-              WDG1[:,:,:] = xs[10][:,:,:];
-          if len(xs) > 11:
-              WSG1[:,:,:] = xs[11][:,:,:];
           
           ds.close();
-
 
 ###############################################################################
 ###############################################################################
@@ -553,8 +497,7 @@ class numerical_model:
           var_all = [1,1,1,1,1,1,1,1];
           var_one = [1,0,0,0,0,0,0,0];
           var_two = [0,0,1,1,1,1,1,1];
-          # Updated mask_lev to include WDG1 (index 10) and WSG1 (index 11) as var_all
-          self.mask_lev = [var_all,var_all,var_all,var_two,var_one,var_all,var_all,var_all,var_two,var_one, var_all, var_all];
+          self.mask_lev = [var_all,var_all,var_all,var_two,var_one,var_all,var_all,var_all,var_two,var_one];
           if np.size(option)>1: self.mask_cor = option;
           if option==1: self.create_rel_per_level();
           if option==2: self.create_per_variable();

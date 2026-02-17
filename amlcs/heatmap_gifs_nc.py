@@ -19,7 +19,7 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directory (where cycle files are)
-EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/nonlinear_results/data"
+EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_ps_only_obs/data"
 
 # Reference Directory (where 'snapshots' and 'free_run' are)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
@@ -28,7 +28,7 @@ REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 OUT_DIR_NAME = "../heatmaps_nc"
 
 # Variables to process
-VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WSG1"]
+VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WSG1", "WDG1"]
 
 # Level index to plot (for 3D vars) - PSG1 is 2D so this is ignored for it
 LEVEL_IDX = 7  # Surface level for T21 (0 is top, 7 is bottom)
@@ -37,7 +37,7 @@ LEVEL_IDX = 7  # Surface level for T21 (0 is top, 7 is bottom)
 NLAT, NLON = 32, 64
 
 # Units for time-series plots
-UNITS = {"UG1": "m/s", "VG1": "m/s", "TG1": "K", "TRG1": "g/kg", "PSG1": "log(ps/p0)", "WSG1": "m/s"}
+UNITS = {"UG1": "m/s", "VG1": "m/s", "TG1": "K", "TRG1": "g/kg", "PSG1": "log(ps/p0)", "WSG1": "m/s", "WDG1": "rad"}
 
 # =============================================================
 
@@ -85,7 +85,6 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
             elif data.ndim == 4:  # (time, nlev, lat, lon)
                 return data[0, lev if "PSG" not in var else 0, :, :]
 
-        # 3. Fallback for WSG1 (Wind Speed) if derived
         if var == "WSG1":
             # Try to read components
             if prefix:
@@ -97,6 +96,18 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
             
             if not np.all(np.isnan(u)) and not np.all(np.isnan(v)):
                  return np.sqrt(u**2 + v**2)
+
+        # 4. Fallback for WDG1 (Wind Direction) if derived
+        if var == "WDG1":
+            if prefix:
+                u = _read_nc_field(nc_path, "UG1", lev, prefix)
+                v = _read_nc_field(nc_path, "VG1", lev, prefix)
+            else:
+                u = _read_nc_field(nc_path, "UG1", lev)
+                v = _read_nc_field(nc_path, "VG1", lev)
+            
+            if not np.all(np.isnan(u)) and not np.all(np.isnan(v)):
+                 return np.arctan2(v, u)
 
     return np.full((NLAT, NLON), np.nan)
 
@@ -166,14 +177,25 @@ def main():
             
             # --- COMPUTE DIFFERENCES ---
             
-            # Innovation: Obs - Background (skip if obs is missing)
-            innov = obs_val - xb
+            # --- COMPUTE DIFFERENCES ---
             
-            # Increment: Analysis - Background
-            incr = xa - xb
-            
-            # Error: |Analysis - Truth|
-            err = np.abs(xa - xt)
+            if var == "WDG1":
+                # Circular difference: (a - b + pi) % 2pi - pi
+                def circ_diff(a, b):
+                    return (a - b + np.pi) % (2*np.pi) - np.pi
+                
+                innov = circ_diff(obs_val, xb)
+                incr  = circ_diff(xa, xb)
+                err   = np.abs(circ_diff(xa, xt))
+            else:
+                # Innovation: Obs - Background (skip if obs is missing)
+                innov = obs_val - xb
+                
+                # Increment: Analysis - Background
+                incr = xa - xb
+                
+                # Error: |Analysis - Truth|
+                err = np.abs(xa - xt)
             
             # Store frames
             frames["innovation"].append(innov)

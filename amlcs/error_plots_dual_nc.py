@@ -16,8 +16,9 @@ Generates two families of plots for each variable:
 ###############################################################################
 
 # FULL PATHS to the two experiment directories you want to compare:
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_added_no_uv_obs/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_no_uv_obs/data"
+
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_only_m2/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_ps_only_obs/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -43,7 +44,7 @@ GENERATE_LOG_PLOTS = False
 
 # Explicit Output Directory (optional)
 # If set, plots will be saved here directly.
-OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_added_no_uv_obs/enkf_vs_reverseSDE"
+OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_only_m2/enkf_vs_reverseSDE"
 
 # Output directory name (ignored if OUTPUT_DIR is set)
 PLOT_DIR_NAME = None  
@@ -177,6 +178,11 @@ def _find_cycle_files(exp_path: Path, method: str):
     }
     pattern = patterns.get(method, f"{method.lower()}_cycle*.nc")
     files = sorted(exp_path.glob(pattern))
+    
+    # Fallback for ReverseSDE (or others) to unified_cycle if specific not found
+    if not files:
+        files = sorted(exp_path.glob("unified_cycle*.nc"))
+        
     return files
 
 
@@ -291,8 +297,12 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
     for cycle_k in cycles:
         try:
             # Find the cycle file
+            # Find the cycle file
             if method == "ReverseSDE":
+                # Try specific first, then unified
                 cycle_file = exp_path / f"reverseSDE_cycle{cycle_k}.nc"
+                if not cycle_file.exists():
+                    cycle_file = exp_path / f"unified_cycle{cycle_k}.nc"
             elif method == "EnKF_MC_obs":
                 cycle_file = exp_path / f"unified_cycle{cycle_k}.nc"
             else:
@@ -488,19 +498,20 @@ def run_dual_plots():
     method2 = exp2_info['method']
 
     # Filter variables based on existence in files
-    print("Checking available variables...")
+    print("Checking available variables...", flush=True)
     vars1 = _get_available_vars(exp1, method1, VARS)
     vars2 = _get_available_vars(exp2, method2, VARS)
     
+    print(f"Vars in EXP1 ({exp1}): {vars1}", flush=True)
+    print(f"Vars in EXP2 ({exp2}): {vars2}", flush=True)
+    
     common_vars = vars1.intersection(vars2)
-    missing = set(VARS) - common_vars
-    if missing:
-        print(f"Skipping missing variables: {missing}")
-        
+    print(f"Common Vars: {common_vars}", flush=True)
+    
     active_vars = [v for v in VARS if v in common_vars]
     
     if not active_vars:
-        print("Error: No common variables found between experiments!")
+        print("Error: No common variables found from the requested list!")
         return
 
     out_name = PLOT_DIR_NAME or f"{method1}_vs_{method2}"

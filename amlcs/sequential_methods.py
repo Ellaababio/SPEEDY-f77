@@ -1052,6 +1052,11 @@ class ReverseSDE(ensemble_DA):
             i1 = int(non_empty['idx_observed'].max())
             print(f"[debug] first obs_map block idx range: {i0}–{i1} "
                 f"(m={non_empty['idx_observed'].size}, vars={non_empty.get('vars')})")
+        
+        elif hasattr(ob, 'wind_obs') and ob.wind_obs: 
+            # Allow proceed if we have Wind Obs (WDG1/WSG1) even if no standard obs
+            print(f"[debug] No standard observations found, but wind_obs detected: {list(ob.wind_obs.keys())}. Proceeding.")
+        
         else:
             raise RuntimeError("No observations selected after applying obs_plc—"
                             "check obs_plc and time-level filters (TG0 vs TG1).")
@@ -1261,6 +1266,100 @@ class ReverseSDE(ensemble_DA):
             # Default fallback: inflated background
             XA_block_fallback = self.covariance_inflation(XB)
 
+            # ============================================================
+            # (Pre-A) WIND OBSERVATION SETUP (AUXILIARY)
+            # ============================================================
+            # Check if this block is UG1 or VG1 and if we have wind obs in self.obs.wind_obs
+            is_wind_update = False
+            wind_mode = None 
+            
+            # Identify Block Variable
+            block_var_name = None
+            block_level = None
+            if len(self.nm.mask_cor[block_idx]) > 0:
+                 v_inf, r_inf = self.nm.mask_cor[block_idx][0]
+                 block_var_idx = v_inf[0]
+                 block_level   = v_inf[1]
+                 block_var_name = self.nm.var_names[block_var_idx]
+            
+            # Determine Mode
+            if block_var_name == 'UG1':
+                wind_mode = "updating_u"
+            elif block_var_name == 'VG1':
+                wind_mode = "updating_v"
+            
+            target_wdg_data = None
+            target_wsg_data = None
+            
+            # Use self.current_cycle_k which is set in prepare_analysis
+            k_step = getattr(self, 'current_cycle_k', 0)
+            
+            # Initialize for safety
+            partner_block_idx = -1
+
+            if wind_mode and hasattr(ob, 'y_wind_obs'):
+                 # WDG
+                 if 'WDG1' in ob.wind_obs and block_level in ob.wind_obs['WDG1']:
+                      # Metadata
+                      meta = ob.wind_obs['WDG1'][block_level]
+                      # Data
+                      if k_step < len(ob.y_wind_obs):
+                          data = ob.y_wind_obs[k_step].get('WDG1', {}).get(block_level)
+                          if data is not None:
+                              target_wdg_data = {
+                                  'idx_observed': np.array(meta['stations']),
+                                  'y': data.flatten(), # Mean obs (1D)
+                                  'sigma': np.full(len(data), 1.0) # Error std (1D)
+                              }
+
+                 # WSG
+                 if 'WSG1' in ob.wind_obs and block_level in ob.wind_obs['WSG1']:
+                      meta = ob.wind_obs['WSG1'][block_level]
+                      if k_step < len(ob.y_wind_obs):
+                          data = ob.y_wind_obs[k_step].get('WSG1', {}).get(block_level)
+                          if data is not None:
+                              target_wsg_data = {
+                                  'idx_observed': np.array(meta['stations']),
+                                  'y': data.flatten(), # 1D
+                                  'sigma': np.full(len(data), 1.0) # 1D
+                              }
+
+            # If we don't have explicit OM, but we have wind data, synthesize!
+            synth_idx = None
+            is_synthesized_wind = False # Flag to suppress linear score
+
+            if ((OM is None) or ("idx_observed" not in OM) or (OM["idx_observed"] is None) or (OM["idx_observed"].size == 0)):
+                 if wind_mode and (target_wdg_data or target_wsg_data):
+                     # Union of indices
+                     idxs = []
+                     if target_wdg_data: idxs.extend(target_wdg_data['idx_observed'])
+                     if target_wsg_data: idxs.extend(target_wsg_data['idx_observed'])
+                     
+                     if idxs:
+                         synth_idx = np.unique(idxs)
+                         # Create Dummy OM
+                         m_synth = synth_idx.size
+                         y_dummy = _np.zeros(m_synth, dtype=_np.float32)
+                         sigma_dummy = _np.full(m_synth, 1.0e9, dtype=_np.float32)
+                         
+                         OM = {
+                             "idx_observed": synth_idx,
+                             "y": y_dummy,
+                             "sigma": sigma_dummy
+                         }
+                         # Flag as wind update
+                         is_wind_update = True
+                         is_synthesized_wind = True
+            
+            # If we DO have OM, we still set is_wind_update if we have wind data
+            if wind_mode and (target_wdg_data or target_wsg_data):
+                is_wind_update = True
+
+            # ... [Rest of code handles SDE] ...
+            # I need to ensure target_wdg_data / target_wsg_data are passed to _perform_assimilation_block
+            # But here we are IN _perform_assimilation_block (inline).
+            # So I can just use them.
+            
             # --- base "no obs" gate ---
             if (OM is None) or ("idx_observed" not in OM) or (OM["idx_observed"] is None):
                 self.XA_map.append(XA_block_fallback)
@@ -1272,11 +1371,11 @@ class ReverseSDE(ensemble_DA):
                 self.XA_map.append(XA_block_fallback)
                 self._write_unified_nc_block(block_idx, XB_block=XB, XA_block=XA_block_fallback, obs_info=OM)
                 continue
+            
             # ============================================================
-            # Build obs-space index sets for UG1/VG1/TG1/TRG1@lev7, PSG1
+            # Build obs-space index sets
             # ============================================================
-            # We map *block-local* state indices 0..n_block-1 to (var_name, lev),
-            # then restrict to the observation indices idx_ob (0..m-1).
+            # ... [Existing logic for vnames_block] ...
             vnames_block = _np.empty(n_block, dtype=object)
             levs_block   = _np.empty(n_block, dtype=int)
             off = 0
@@ -1284,19 +1383,24 @@ class ReverseSDE(ensemble_DA):
                 (v_idx, lev) = v_info
                 lat_n, lon_n = res
                 N = int(lat_n) * int(lon_n)
-                vname = self.nm.var_names[v_idx]   # e.g., 'UG1', 'TRG1', 'PSG1'
+                # handle if v_idx is out of bound? (Should not happen for valid mask_cor)
+                if v_idx < len(self.nm.var_names):
+                    vname = self.nm.var_names[v_idx]
+                else:
+                    vname = "UNKNOWN"
+                
                 vnames_block[off:off+N] = vname
                 levs_block[off:off+N]   = int(lev)
                 off += N
+            
             if off != n_block:
                 print(f"[ReverseSDE][{label}] WARNING: offset {off} != n_block {n_block}")
 
             # Restrict to observation locations
-            vnames_obs = vnames_block[idx_ob]   # length m
-            levs_obs   = levs_block[idx_ob]     # length m
+            vnames_obs = vnames_block[idx_ob]
+            levs_obs   = levs_block[idx_ob]
 
-            # We track these 5 "variables":
-            #   UG1@lev7, VG1@lev7, TG1@lev7, TRG1@lev7, PSG1 (no vertical levels)
+            # Tracking logic...
             tracking_obs_indices = []
             specs = [
                 ("UG1",  7),
@@ -1305,12 +1409,12 @@ class ReverseSDE(ensemble_DA):
                 ("TRG1", 7),
                 ("PSG1", None),
             ]
-
             for base_name, lev_target in specs:
                 if lev_target is None:
                     mask = (vnames_obs == base_name)
                 else:
                     mask = (vnames_obs == base_name) & (levs_obs == lev_target)
+
                 idxs_j = _np.where(mask)[0].astype(_np.int64)  # obs indices j in 0..m-1
                 tracking_obs_indices.append(idxs_j)
             # Do we actually have any obs for the tracked var/lev combos in this block?
@@ -1444,6 +1548,127 @@ class ReverseSDE(ensemble_DA):
                 "steps": []
             }
             do_plot_pressure = (cycle_k in [5, 6, 7, 8])
+
+            obs_wdg_vals = None
+            obs_wdg_sigma = None
+            obs_wdg_mask = None # Boolean mask over m (the current local indices)
+
+            if wind_mode and target_wdg_data is not None:
+                try:
+                    # Get WDG obs data from our lookup
+                    idx_wdg = target_wdg_data["idx_observed"]
+                    y_wdg   = target_wdg_data["y"]
+                    sig_wdg = target_wdg_data["sigma"]
+                    
+                    # We need to find overlap: which of our 'idx_ob' (U indices) are also in 'idx_wdg'?
+                    # idx_ob are the global indices of the points we are tracking
+                    common_mask = _np.isin(idx_ob, idx_wdg)
+
+                    if common_mask.any():
+                        is_wind_update = True
+                        
+                        # Create aligned arrays (size m)
+                        y_wdg_aligned = _np.full(m, _np.nan)
+                        sig_wdg_aligned = _np.full(m, _np.nan)
+                        
+                        # Flatten y and sigma for lookup
+                        y_wdg_flat = y_wdg.flatten()
+                        sig_wdg_flat = sig_wdg.flatten()
+                        
+                        # Create lookup dicts
+                        wdg_lookup = dict(zip(idx_wdg, y_wdg_flat))
+                        sig_lookup = dict(zip(idx_wdg, sig_wdg_flat))
+                        
+                        # Fill aligned
+                        for k in _np.where(common_mask)[0]:
+                            g_idx = idx_ob[k]
+                            y_wdg_aligned[k] = wdg_lookup[g_idx]
+                            sig_wdg_aligned[k] = sig_lookup[g_idx]
+                            
+                        obs_wdg_vals  = _torch.from_numpy(y_wdg_aligned.astype(_np.float32)).to(device)
+                        obs_wdg_sigma = _torch.from_numpy(sig_wdg_aligned.astype(_np.float32)).to(device)
+                        obs_wdg_mask  = _torch.from_numpy(common_mask).to(device)
+                        
+                        # print(f"[ReverseSDE][{label}] Linked WDG1 obs: {common_mask.sum()} points")
+
+                except Exception as e:
+                    print(f"[ReverseSDE][{label}] Failed to link WDG obs: {e}")
+                    is_wind_update = False
+
+            # Load WSG Obs if available
+            obs_wsg_vals = None
+            obs_wsg_sigma = None
+            obs_wsg_mask = None
+
+            if wind_mode and target_wsg_data is not None:
+                try:
+                    idx_wsg = target_wsg_data["idx_observed"]
+                    y_wsg   = target_wsg_data["y"]
+                    sig_wsg = target_wsg_data["sigma"]
+                    
+                    common_mask_wsg = _np.isin(idx_ob, idx_wsg)
+
+                    if common_mask_wsg.any():
+                            # We treat WSG as another potential wind update source
+                            # If we have either WDG or WSG, we need partner state
+                            # is_wind_update might already be True from WDG
+                            is_wind_update = True
+                            
+                            y_wsg_aligned = _np.full(m, _np.nan)
+                            sig_wsg_aligned = _np.full(m, _np.nan)
+                            
+                            wsg_lookup = dict(zip(idx_wsg, y_wsg))
+                            sig_lookup = dict(zip(idx_wsg, sig_wsg))
+                            
+                            for k in _np.where(common_mask_wsg)[0]:
+                                g_idx = idx_ob[k]
+                                y_wsg_aligned[k] = wsg_lookup[g_idx]
+                                sig_wsg_aligned[k] = sig_lookup[g_idx]
+                                
+                            obs_wsg_vals  = _torch.from_numpy(y_wsg_aligned.astype(_np.float32)).to(device)
+                            obs_wsg_sigma = _torch.from_numpy(sig_wsg_aligned.astype(_np.float32)).to(device)
+                            obs_wsg_mask  = _torch.from_numpy(common_mask_wsg).to(device)
+                            
+                            print(f"[ReverseSDE][{label}] Linked WSG1 obs: {common_mask_wsg.sum()} points")
+
+                except Exception as e:
+                    print(f"[ReverseSDE][{label}] Failed to link WSG obs: {e}")
+                    # Don't set is_wind_update = False here, might still have WDG
+                    pass
+            
+            # Fetch Partner State (Constant during this update)
+            partner_state = None
+            
+            # Re-identify partner block index if we need wind update
+            if is_wind_update and partner_block_idx == -1:
+                 # Standard offset assumption: UG1 is block I, VG1 is block I+1 (or vice versa)
+                 if wind_mode == "updating_u":
+                      # Partner is VG1 which is likely block_idx + 1
+                      candidate = block_idx + 1
+                 else:
+                      # Partner is UG1 which is likely block_idx - 1
+                      candidate = block_idx - 1
+                 
+                 if 0 <= candidate < len(self.XB_map):
+                      partner_block_idx = candidate
+
+            if is_wind_update and partner_block_idx != -1:
+                 try:
+                     # We need the Partner Ensembles at the locations of 'idx_ob'
+                     # To do this correctly, we access the global XB_map
+                     XB_partner_info = self.XB_map[partner_block_idx]
+                     XB_partner_full = XB_partner_info["XB_b"] # (n_block, Nens)
+                     
+                     # Extract at our indices (idx_ob)
+                     # Assuming blocks are aligned 1-to-1 (Indices 0..N match)
+                     XB_partner_sub = XB_partner_full[idx_ob, :] # (m, Nens)
+                     
+                     # Convert to Torch
+                     partner_state = _torch.from_numpy(XB_partner_sub.T.astype(_np.float32)).to(device) # (Nens, m)
+                     
+                 except Exception as e:
+                     print(f"[ReverseSDE][{label}] Failed to fetch partner state: {e}")
+                     is_wind_update = False
 
             for i in range(1, psteps+1):
                 if i == 1:  # only print once per block
@@ -1582,6 +1807,75 @@ class ReverseSDE(ensemble_DA):
                     )
                 else:
                     like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
+
+                # FOR "WIND-ONLY" SYNTHESIZED BLOCKS:
+                # The linear score is based on dummy observations (y=0, sigma=huge).
+                # To be absolutely safe, we force it to zero here.
+                if is_synthesized_wind:
+                     like_score = _torch.zeros_like(like_score)
+
+                # --- (E) ADD NONLINEAR WIND SCORES ---
+                if is_wind_update and partner_state is not None:
+                     # 1. De-normalize current state
+                     x_phy = mean_X0 + xt * std_X0 
+                     
+                     # 2. Identify U and V components
+                     if wind_mode == "updating_u":
+                         u_vec = x_phy
+                         v_vec = partner_state # (Nens, m) already physical
+                     else:
+                         u_vec = partner_state
+                         v_vec = x_phy
+                     
+                     # Pre-compute magnitude squared for gradients
+                     res_sq = u_vec**2 + v_vec**2
+                     res_sq = _torch.clamp(res_sq, min=1e-6) # avoid div0
+
+                     # --- WDG Contribution ---
+                     if obs_wdg_vals is not None:
+                         # WDG = atan2(v, u)
+                         pred_wdg = _torch.atan2(v_vec, u_vec) # (Nens, m)
+                         
+                         # Residual (Innovation)
+                         diff = pred_wdg - obs_wdg_vals 
+                         # Wrap to [-pi, pi]
+                         diff = (diff + _np.pi) % (2 * _np.pi) - _np.pi
+                         
+                         # Gradient of h w.r.t current state
+                         if wind_mode == "updating_u":
+                             grad_h_xphy = -v_vec / res_sq
+                         else:
+                             grad_h_xphy = u_vec / res_sq
+                             
+                         # Chain rule
+                         grad_h_xt = grad_h_xphy * std_X0
+                         
+                         # Score
+                         wind_score = -(diff / (obs_wdg_sigma**2)) * grad_h_xt
+                         wind_score = _torch.where(obs_wdg_mask, wind_score, _torch.zeros_like(wind_score))
+                         like_score = like_score + wind_score
+
+                     # --- WSG Contribution ---
+                     if obs_wsg_vals is not None:
+                         # WSG = sqrt(u^2 + v^2)
+                         pred_wsg = _torch.sqrt(res_sq)
+                         
+                         diff_wsg = pred_wsg - obs_wsg_vals
+                         
+                         # Gradients
+                         # dh/du = u / speed, dh/dv = v / speed
+                         speed_safe = _torch.clamp(pred_wsg, min=1e-6)
+                         
+                         if wind_mode == "updating_u":
+                             grad_wsg_xphy = u_vec / speed_safe
+                         else:
+                             grad_wsg_xphy = v_vec / speed_safe
+                             
+                         grad_wsg_xt = grad_wsg_xphy * std_X0
+                         
+                         wsg_score = -(diff_wsg / (obs_wsg_sigma**2)) * grad_wsg_xt
+                         wsg_score = _torch.where(obs_wsg_mask, wsg_score, _torch.zeros_like(wsg_score))
+                         like_score = like_score + wsg_score
                 
                 like_tau = tau * like_score
                 pull = (g ** 2) * like_tau
