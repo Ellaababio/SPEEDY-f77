@@ -273,6 +273,8 @@ class observation:
                   vg1_ref = xs[v_idx]
                   
                   for w_name in self.wind_obs: # WDG1, WSG1
+                      # DEBUG PRINT
+                      if s == 0: print(f"[DEBUG] Generating synthetic obs for {w_name}")
                       y_wind_t[w_name] = {}
                       err_std = wind_errors.get(w_name, 1.0)
                       

@@ -66,7 +66,22 @@ def get_random_code():
 ####################################################################################
 def compute_coef_SVD(A,b,thr):
     N,n = A.shape;
-    Ui,Si,Vi = np.linalg.svd(A,full_matrices=False);
+    
+    try:
+        Ui,Si,Vi = np.linalg.svd(A,full_matrices=False);
+    except np.linalg.LinAlgError:
+        # SVD failed to converge - matrix is too ill-conditioned
+        # Add small regularization and retry
+        print(f"[WARNING] SVD convergence failed. Adding regularization. Shape: {A.shape}")
+        eps = 1e-6 * np.linalg.norm(A, 'fro')
+        A_reg = A + eps * np.random.randn(*A.shape)
+        try:
+            Ui,Si,Vi = np.linalg.svd(A_reg,full_matrices=False);
+        except np.linalg.LinAlgError:
+            # Still failing - return zero coefficients (no regression)
+            print(f"[WARNING] SVD failed twice. Returning zero coefficients.")
+            return np.zeros(n)
+    
     Smax = np.max(Si);
     Vi = Vi.T;
     beta = np.zeros(n);

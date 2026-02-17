@@ -124,8 +124,13 @@ def main():
     rs = reference_solution(nm, M);
     
     
+    
     #Setting the sequential data assimilation method
-    seq_da = sequential_method(method).get_instance(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact);
+    wind_err = {}
+    if len(err_obs) > 10: wind_err['WDG1'] = err_obs[10]
+    if len(err_obs) > 11: wind_err['WSG1'] = err_obs[11]
+    
+    seq_da = sequential_method(method).get_instance(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err);
     
     ob.build_observational_network(gs, nm, s=s);
     ob.build_synthetic_observations(nm, rs, M); 

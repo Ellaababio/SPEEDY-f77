@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Error Plotter for NetCDF Output (ReverseSDE / EnKF)
-Plots absolute L2 error for Analysis, Background, and NODA.
+Plots RMSE (Root Mean Square Error) for Analysis, Background, and NODA.
 
 Usage:
-    python error_plots_nc_version.py <csv_config_file>
+    python error_plots_new.py <csv_config_file>
 
 Config File Format (CSV):
     exp_path,variable,level,M,resolution,plot_dir_name
@@ -35,14 +35,14 @@ except ImportError:
 VAR_CODES = {
     "TG0": "T_0", "UG0": "u_0", "VG0": "v_0", "TRG0": "Hq_0", "PSG0": "PS_0",
     "TG1": "T_1", "UG1": "u_1", "VG1": "v_1", "TRG1": "Hq_1", "PSG1": "PS_1",
-    "WDG1": r"\theta_1", "WSG1": "WS_1",
 }
 PSLVL = [30, 100, 200, 300, 500, 700, 850, 925]
-MODEL_VARS = ["PSG0", "PSG1", "TG0", "TG1", "TRG0", "TRG1", "UG0", "UG1", "VG0", "VG1", "WDG1", "WSG1"]
+# Model state variables (WDG1/WSG1 are observations, not state variables)
+MODEL_VARS = ["PSG0", "PSG1", "TG0", "TG1", "TRG0", "TRG1", "UG0", "UG1", "VG0", "VG1"]
 
 
-def compute_l2_error(state, truth):
-    """Compute L2 error between state and truth."""
+def compute_rmse(state, truth):
+    """Compute Root Mean Square Error (RMSE) between state and truth."""
     diff = state - truth
     return np.sqrt(np.mean(diff**2))
 
@@ -104,21 +104,13 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                         lev_tag = f"lev{lev}"
                         def read_var(prefix):
                             vname = f"{prefix}_{var}_{lev_tag}"
-                            # Fallback for WSG1
-                            if var == "WSG1" and vname not in nc.variables:
-                                u_name = f"{prefix}_UG1_{lev_tag}"
-                                v_name = f"{prefix}_VG1_{lev_tag}"
-                                if u_name in nc.variables and v_name in nc.variables:
-                                    u = nc.variables[u_name][:]
-                                    v = nc.variables[v_name][:]
-                                    return np.sqrt(u**2 + v**2)
                             return nc.variables[vname][:] if vname in nc.variables else None
 
                         tr = read_var("truth")
                         nd = read_var("noda")
                         
                         if tr is not None and nd is not None:
-                            anchor_data[var][lev] = compute_l2_error(nd, tr)
+                            anchor_data[var][lev] = compute_rmse(nd, tr)
         except Exception as e:
             print(f"Warning: Failed to read anchor from {nc_0}: {e}")
 
@@ -153,14 +145,6 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                         lev_tag = f"lev{lev}"
                         def read_var(prefix):
                             vname = f"{prefix}_{var}_{lev_tag}"
-                            # Fallback for WSG1
-                            if var == "WSG1" and vname not in nc.variables:
-                                u_name = f"{prefix}_UG1_{lev_tag}"
-                                v_name = f"{prefix}_VG1_{lev_tag}"
-                                if u_name in nc.variables and v_name in nc.variables:
-                                    u = nc.variables[u_name][:]
-                                    v = nc.variables[v_name][:]
-                                    return np.sqrt(u**2 + v**2)
                             return nc.variables[vname][:] if vname in nc.variables else None
 
                         xa = read_var("xa_mean")
@@ -170,15 +154,15 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
                         nd = read_var("noda")
                         
                         if xa is not None and tr is not None:
-                            data[var][lev]['ana'].append(compute_l2_error(xa, tr))
+                            data[var][lev]['ana'].append(compute_rmse(xa, tr))
                             
                             if xb is not None:
-                                data[var][lev]['bkg'].append(compute_l2_error(xb, tr))
+                                data[var][lev]['bkg'].append(compute_rmse(xb, tr))
                             else:
                                 data[var][lev]['bkg'].append(np.nan)
                                 
                             if nd is not None:
-                                err_noda = compute_l2_error(nd, tr)
+                                err_noda = compute_rmse(nd, tr)
                                 data[var][lev]['noda'].append(err_noda)
                                 # If we didn't find cycle 0, use cycle 1 NODA as anchor
                                 if anchor_data[var][lev] is None:
@@ -242,10 +226,77 @@ def process_experiment(exp_path, variables, levels, M, plot_dir_name, output_dir
             plt.close()
             print(f"Saved {out_file}")
 
+    # ===================== LEVEL-AVERAGED PLOTS =====================
+    # For variables with multiple levels, create averaged plots
+    print("\nGenerating level-averaged plots...")
+    
+    for var in variables:
+        # Determine valid levels for this variable
+        valid_levels = []
+        for lev in levels:
+            if "PSG" in var and lev > 0: continue
+            if "TRG" in var and lev < 2: continue
+            if data[var][lev]['ana']:  # Has data
+                valid_levels.append(lev)
+        
+        # Skip if less than 2 levels (nothing to average)
+        if len(valid_levels) < 2:
+            continue
+            
+        print(f"Processing {var} (level-averaged across {len(valid_levels)} levels)...")
+        
+        # Collect all level series
+        ana_levels = []
+        bkg_levels = []
+        noda_levels = []
+        anchor_levels = []
+        
+        for lev in valid_levels:
+            series = data[var][lev]
+            anc = anchor_data[var][lev]
+            if anc is None: anc = np.nan
+            
+            anchor_levels.append(anc)
+            ana_levels.append(np.array([anc] + series['ana']))
+            bkg_levels.append(np.array([anc] + series['bkg']))
+            noda_levels.append(np.array([anc] + series['noda']))
+        
+        # Find minimum length (in case some levels have missing cycles)
+        min_len = min(len(x) for x in ana_levels + bkg_levels + noda_levels)
+        
+        # Average across levels
+        ana_avg = np.vstack([x[:min_len] for x in ana_levels]).mean(axis=0)
+        bkg_avg = np.vstack([x[:min_len] for x in bkg_levels]).mean(axis=0)
+        noda_avg = np.vstack([x[:min_len] for x in noda_levels]).mean(axis=0)
+        
+        # Use same cycle axis (may be truncated)
+        cycles_avg = cycles[:min_len]
+        
+        plt.figure(figsize=(9, 4))
+        plt.title(rf"$\mathrm{{{VAR_CODES.get(var, var)}}}$ (Level Average)")
+        
+        plt.plot(cycles_avg, ana_avg, color="r", label="Analysis")
+        
+        if not np.all(np.isnan(bkg_avg)):
+            plt.plot(cycles_avg, bkg_avg, color="b", label="Background")
+            
+        if not np.all(np.isnan(noda_avg)):
+            plt.plot(cycles_avg, noda_avg, color="k", label="NODA")
+            
+        plt.ylabel(r"RMSE")
+        plt.xlabel(r"$\mathrm{Assimilation\ Step}$")
+        plt.legend(loc="best", prop={"size": 14})
+        plt.tight_layout()
+        
+        out_file = plots_path / f"_avg_{var}.png"
+        plt.savefig(out_file, bbox_inches="tight")
+        plt.close()
+        print(f"Saved {out_file}")
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Creates error plots from NetCDF files (Absolute L2 Error).",
+        description="Creates error plots from NetCDF files (RMSE).",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(

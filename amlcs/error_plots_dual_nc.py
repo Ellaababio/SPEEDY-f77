@@ -17,8 +17,8 @@ Generates two families of plots for each variable:
 
 # FULL PATHS to the two experiment directories you want to compare:
 
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_only_m2/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_ps_only_obs/data"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_direction_only/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_direction_only/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -37,14 +37,14 @@ VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
 ANCHOR = "step1"
 
 # Scale mode: "log", "linear", or "both"
-SCALE_MODE = "linear"
+SCALE_MODE = "both"
 
 # Generate log plots? (Set False for absolute-only plots)
-GENERATE_LOG_PLOTS = False
+GENERATE_LOG_PLOTS = True
 
 # Explicit Output Directory (optional)
 # If set, plots will be saved here directly.
-OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_only_m2/enkf_vs_reverseSDE"
+OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_direction_only/enkf_vs_reverseSDE"
 
 # Output directory name (ignored if OUTPUT_DIR is set)
 PLOT_DIR_NAME = None  
@@ -217,32 +217,56 @@ def _read_nc_field(nc_path: Path, var: str, lev: int) -> np.ndarray:
             # Handle dimensions based on rank
             if data.ndim == 3:  # (nlev, lat, lon)
                 return data[lev, :, :]
-            elif data.ndim == 2:  # (lat, lon)
+            if data.ndim == 2: # (lat, lon) e.g. PSG
                 return data[:]
-            elif data.ndim == 4:  # (time, nlev, lat, lon)
+            if data.ndim == 4: # (ntr, lev, lat, lon) e.g. TRG
                 return data[0, lev, :, :]
-                
+
+        # Helper to find component
+        def find_comp(cname, target_lev):
+            # Try prefixed
+            for prefix in ["xa_mean", "xb_mean", "truth", "noda", "obs"]:
+                fn = f"{prefix}_{cname}_lev{target_lev}"
+                if fn in nc.variables: return nc.variables[fn][:]
+            # Try raw
+            if cname in nc.variables:
+                d = nc.variables[cname]
+                if d.ndim == 3: return d[target_lev, :, :]
+                if d.ndim == 2: return d[:]
+                if d.ndim == 4: return d[0, target_lev, :, :]
+            return None
+
+        # Special handling for PSG1 (Surface Pressure - only at lev0)
+        if var == "PSG1":
+            # Just try to find it at level 0, ignore requested 'lev' if distinct
+            return find_comp("PSG1", 0)
+
+        # Special handling for TRG1 (Humidity - only at levels 2-7)
+        if var == "TRG1":
+             # If requested level is < 2, return all zeros or NaN to indicate missing
+             if lev < 2:
+                 return np.zeros((32, 64)) # Hack: Return zeros for invalid levels
+             return find_comp("TRG1", lev)
+        
+        # Standard variables
+        res = find_comp(var, lev)
+        if res is not None: return res
+
         # 3. Fallback for WDG1 (Derived from U/V if not present)
         if var == "WDG1":
-            # Helper to find component
-            def find_comp(cname):
-                # Try prefixed
-                for prefix in ["xa_mean", "xb_mean", "truth", "noda", "obs"]:
-                    fn = f"{prefix}_{cname}_lev{lev}"
-                    if fn in nc.variables: return nc.variables[fn][:]
-                # Try raw
-                if cname in nc.variables:
-                    d = nc.variables[cname]
-                    if d.ndim == 3: return d[lev, :, :]
-                    if d.ndim == 2: return d[:]
-                    if d.ndim == 4: return d[0, lev, :, :]
-                return None
-
-            u_data = find_comp("UG1")
-            v_data = find_comp("VG1")
+            u_data = find_comp("UG1", lev)
+            v_data = find_comp("VG1", lev)
             
             if u_data is not None and v_data is not None:
                 return np.arctan2(v_data, u_data)
+
+        # 4. Fallback for WSG1 (Derived from U/V if not present)
+        if var == "WSG1":
+            u_data = find_comp("UG1", lev)
+            v_data = find_comp("VG1", lev)
+            
+            if u_data is not None and v_data is not None:
+                return np.sqrt(u_data**2 + v_data**2)
 
         raise KeyError(f"Field {var} (lev {lev}) not found in {nc_path}")
 
@@ -560,10 +584,19 @@ def run_dual_plots():
 
     print("Full output Plot Directories:")
     for scale in scales:
-        if scale == "log":
-            print(f"  Log plots:     {exp1 / out_name}")
+        if OUTPUT_DIR:
+             base = Path(OUTPUT_DIR)
+             if scale == "log":
+                 print(f"  Log plots:     {base / 'log'}")
+             elif scale == "linear" and GENERATE_LOG_PLOTS:
+                 print(f"  Linear plots:  {base / 'linear'}")
+             else:
+                 print(f"  Plots:         {base}")
         else:
-            print(f"  Linear plots:  {exp1 / f'{out_name}_abs'}")
+            if scale == "log":
+                print(f"  Log plots:     {exp1 / out_name}")
+            else:
+                print(f"  Linear plots:  {exp1 / f'{out_name}_abs'}")
 
     # ------------------- LEVEL BY LEVEL -------------------
     for var in active_vars:

@@ -26,4 +26,4 @@ echo "=========================================="
 } >> "$log"
 
 # Python output goes ONLY to log file
-python "$script" "$@" &> "$log"
+PYTHONUNBUFFERED=1 python "$script" "$@" &> "$log"
