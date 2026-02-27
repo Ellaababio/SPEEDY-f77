@@ -120,11 +120,6 @@ class observation:
                           'lat': lat,
                           'lon': lon
                       }
-                  # print(f"Captured {w_name} observations: {m_obs} stations per level.")
-
-          #print('* self.obs_H {0}'.format(self.obs_H));
-          #print('* self.obs_n {0}'.format(self.obs_n));
-          #print('* self.obs_m {0}'.format(self.obs_m));
           
           self.build_observational_operator();
           self.build_data_error_covariance(gr, nm);
@@ -244,19 +239,6 @@ class observation:
                   y = Hx + R_sqrt @ np.random.randn(m_obs,1);
                   y_ma.append(y);
               
-              # ----------------------------------------------------------------
-              # Generate Synthetic Wind Observations (stored in self.wind_obs)
-              # ----------------------------------------------------------------
-              # We need multiple instances of wind obs (one per time step)
-              # But self.wind_obs dict structure currently doesn't hold time.
-              # We should append wind obs to y_ma? No, y_ma aligns with blocks.
-              # We need to store wind obs separately or append a special "Wind Block"?
-              # 
-              # Decision: Store wind obs in self.y_obs as a separate entry or dictionary?
-              # Current self.y_obs is a list of lists: y_obs[time][block].
-              # Standard ReverseSDE expects y_obs[k][block].
-              # 
-              # Better: Add a "wind_obs_data" dictionary to self that stores [time][var][lev] -> data
               if not hasattr(self, 'y_wind_obs'):
                    self.y_wind_obs = [] # List of dicts, one per time step
               
@@ -291,7 +273,6 @@ class observation:
                               true_wdg = np.arctan2(v_lev, u_lev)
                               # Add Noise
                               obs_wdg = true_wdg + err_std * np.random.randn(len(stations))
-                              # Wrap to [-pi, pi]? ReverseSDE handles this via sin/cos score.
                               y_wind_t[w_name][lev] = obs_wdg
                               
                           elif w_name == 'WSG1':
@@ -299,7 +280,6 @@ class observation:
                               true_wsg = np.sqrt(u_lev**2 + v_lev**2)
                               # Add Noise
                               obs_wsg = true_wsg + err_std * np.random.randn(len(stations))
-                              # Ensure positive? (Maybe clip, but simple noise for now)
                               y_wind_t[w_name][lev] = obs_wsg
                               
               except Exception as e:

@@ -1298,7 +1298,6 @@ class ReverseSDE(ensemble_DA):
             # ============================================================
             # Build obs-space index sets
             # ============================================================
-            # ... [Existing logic for vnames_block] ...
             vnames_block = _np.empty(n_block, dtype=object)
             levs_block   = _np.empty(n_block, dtype=int)
             off = 0
@@ -1812,16 +1811,10 @@ class ReverseSDE(ensemble_DA):
 
                 # --- LATE TRACKING (Gridpoint Forces) ---
                 if do_track and self.track_gridpoint_loc is not None:
-                     # We reuse the found_target logic or just re-run it?
-                     # Re-running efficiently:
-                     # We already computed everything? No, we need to extract from prior_term / like_tau
-                     # Let's do a quick pass similar to above.
                      prior_np = prior_term.detach().cpu().numpy()
                      like_np  = like_tau.detach().cpu().numpy()
                      
                      for vidx, obs_idx in enumerate(tracking_obs_indices):
-                         # Copy-paste the locator logic or make it a helper?
-                         # Inline for safety
                          lat_target, lon_target = self.track_gridpoint_loc
                          base_name, lev_target = specs[vidx]
                          
