@@ -21,8 +21,8 @@ import os
 # CONFIGURATION: Set the files to compare here
 # ==============================================================================
 
-FILE1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/unified_cycle19.nc"
-FILE2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_vars_only_m2/data_new/unified_cycle19.nc"
+FILE1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/unified_cycle1.nc"
+FILE2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_ps_only/data_ps0001/reverseSDE_cycle1.nc"
 
 # ==============================================================================
 

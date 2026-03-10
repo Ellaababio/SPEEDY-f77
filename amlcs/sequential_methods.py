@@ -1002,7 +1002,7 @@ class ReverseSDE(ensemble_DA):
                  score_clip: float = 10000.0,
                  state_clip: float = 20.0,
                  rng_seed: int = 42,
-                 track_gridpoint_loc: tuple = (27,32),
+                 track_gridpoint_locs: list = None,
                  wind_err=None):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
@@ -1017,7 +1017,7 @@ class ReverseSDE(ensemble_DA):
         self.score_clip = float(score_clip) if score_clip is not None else None
         self.state_clip = float(state_clip) if state_clip is not None else None
         self.rng_seed = int(rng_seed)
-        self.track_gridpoint_loc = track_gridpoint_loc
+        self.track_gridpoint_locs = track_gridpoint_locs if track_gridpoint_locs is not None else [(8, 31), (24, 36)]
         self.rng = np.random.RandomState(self.rng_seed)
         self.wind_err = wind_err if wind_err is not None else {}
         self._cycle_idx = 0  # incremented once per perform_assimilation() call
@@ -1185,6 +1185,7 @@ class ReverseSDE(ensemble_DA):
             nc_init.createDimension("block", None)
             nc_init.createDimension("psteps", psteps)
             nc_init.createDimension("var", 5)
+            nc_init.createDimension("pts", len(self.track_gridpoint_locs))
             nc_init.createDimension("ens", None)
 
             xt_state_mean = nc_init.createVariable(
@@ -1194,7 +1195,7 @@ class ReverseSDE(ensemble_DA):
             )
             xt_state_gridpoint = nc_init.createVariable(
                 "xt_state_gridpoint", "f4",
-                ("cycle", "block", "psteps", "var", "ens"),
+                ("cycle", "block", "psteps", "var", "pts", "ens"),
                 zlib=True
             )
             xt_norm_mean = nc_init.createVariable(
@@ -1204,17 +1205,17 @@ class ReverseSDE(ensemble_DA):
             )
             xt_norm_gridpoint = nc_init.createVariable(
                 "xt_norm_gridpoint", "f4",
-                ("cycle", "block", "psteps", "var", "ens"),
+                ("cycle", "block", "psteps", "var", "pts", "ens"),
                 zlib=True
             )
             xt_force_prior_gridpoint = nc_init.createVariable(
                 "xt_force_prior_gridpoint", "f4",
-                ("cycle", "block", "psteps", "var", "ens"),
+                ("cycle", "block", "psteps", "var", "pts", "ens"),
                 zlib=True
             )
             xt_force_like_gridpoint = nc_init.createVariable(
                 "xt_force_like_gridpoint", "f4",
-                ("cycle", "block", "psteps", "var", "ens"),
+                ("cycle", "block", "psteps", "var", "pts", "ens"),
                 zlib=True
             )
 
@@ -1809,13 +1810,13 @@ class ReverseSDE(ensemble_DA):
                     x_norm_step = xt_np # (Nens, m) - Already normalized
 
                     values_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
-                    values_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_gridpoint = _np.full((5, len(self.track_gridpoint_locs), Nens), _np.nan, dtype=_np.float32)
                     
                     values_norm_mean = _np.full((5, Nens), _np.nan, dtype=_np.float32)
-                    values_norm_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_norm_gridpoint = _np.full((5, len(self.track_gridpoint_locs), Nens), _np.nan, dtype=_np.float32)
                     
-                    values_force_prior_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
-                    values_force_like_gridpoint = _np.full((5, Nens), _np.nan, dtype=_np.float32)
+                    values_force_prior_gridpoint = _np.full((5, len(self.track_gridpoint_locs), Nens), _np.nan, dtype=_np.float32)
+                    values_force_like_gridpoint = _np.full((5, len(self.track_gridpoint_locs), Nens), _np.nan, dtype=_np.float32)
 
                     for vidx, obs_idx in enumerate(tracking_obs_indices):
                         if obs_idx.size == 0:
@@ -1829,60 +1830,41 @@ class ReverseSDE(ensemble_DA):
                         values_norm_mean[vidx, :] = sub_norm.mean(axis=1).astype(_np.float32)
 
                         # 2. Track gridpoint if requested
-                        if self.track_gridpoint_loc is not None:
-                            # Gridpoint tracking logic
-                            lat_target, lon_target = self.track_gridpoint_loc
-                            
-                            # We need to find if the target gridpoint is in this block for this variable
-                            # Re-iterate specs to find which variable we are currently processing
-                            # (vidx corresponds to specs[vidx])
-                            base_name, lev_target = specs[vidx]
-                            
-                            # Find the offset for this variable in the block
-                            # We need to reconstruct the block layout to find the specific index
-                            found_target = False
-                            current_offset = 0
-                            
-                            for (v_info, res) in self.nm.mask_cor[block_idx]:
-                                (v_idx_loop, lev_loop) = v_info
-                                lat_n, lon_n = res
-                                N = int(lat_n) * int(lon_n)
-                                vname_loop = self.nm.var_names[v_idx_loop]
+                        if self.track_gridpoint_locs:
+                            for pt_idx, loc in enumerate(self.track_gridpoint_locs):
+                                lat_target, lon_target = loc
                                 
-                                # Check if this chunk matches the variable we are tracking
-                                is_target_var = (vname_loop == base_name)
-                                if lev_target is not None:
-                                    is_target_var = is_target_var and (int(lev_loop) == lev_target)
+                                base_name, lev_target = specs[vidx]
+                                found_target = False
+                                current_offset = 0
                                 
-                                if is_target_var:
-                                    # This is the variable chunk. Calculate target index.
-                                    # Flattened index = lat_idx * nlon + lon_idx
-                                    target_flat_idx = lat_target * int(lon_n) + lon_target
+                                for (v_info, res) in self.nm.mask_cor[block_idx]:
+                                    (v_idx_loop, lev_loop) = v_info
+                                    lat_n, lon_n = res
+                                    N = int(lat_n) * int(lon_n)
+                                    vname_loop = self.nm.var_names[v_idx_loop]
                                     
-                                    if target_flat_idx < N:
-                                        block_target_idx = current_offset + target_flat_idx
-                                        
-                                        # Now check if this block_target_idx is in idx_ob (the observed indices)
-                                        # idx_ob maps 0..m-1 -> block_index
-                                        # We want k such that idx_ob[k] == block_target_idx
-                                        
-                                        # Using numpy/torch to find the index
-                                        # idx_ob is numpy array from OM["idx_observed"]
-                                        matches = _np.where(idx_ob == block_target_idx)[0]
-                                        
-                                        if matches.size > 0:
-                                            # Found it!
-                                            k_idx = matches[0]
-                                            val = x_obs_step[:, k_idx] # (Nens,)
-                                            values_gridpoint[vidx, :] = val.astype(_np.float32)
-                                            
-                                            val_norm = x_norm_step[:, k_idx]
-                                            values_norm_gridpoint[vidx, :] = val_norm.astype(_np.float32)
-                                            found_target = True
+                                    is_target_var = (vname_loop == base_name)
+                                    if lev_target is not None:
+                                        is_target_var = is_target_var and (int(lev_loop) == lev_target)
                                     
-                                current_offset += N
-                                if found_target:
-                                    break
+                                    if is_target_var:
+                                        target_flat_idx = lat_target * int(lon_n) + lon_target
+                                        if target_flat_idx < N:
+                                            block_target_idx = current_offset + target_flat_idx
+                                            matches = _np.where(idx_ob == block_target_idx)[0]
+                                            if matches.size > 0:
+                                                k_idx = matches[0]
+                                                val = x_obs_step[:, k_idx]
+                                                values_gridpoint[vidx, pt_idx, :] = val.astype(_np.float32)
+                                                
+                                                val_norm = x_norm_step[:, k_idx]
+                                                values_norm_gridpoint[vidx, pt_idx, :] = val_norm.astype(_np.float32)
+                                                found_target = True
+                                        
+                                    current_offset += N
+                                    if found_target:
+                                        break
                             
 
                             
@@ -1986,42 +1968,46 @@ class ReverseSDE(ensemble_DA):
                 pull = (g ** 2) * like_tau
 
                 # --- LATE TRACKING (Gridpoint Forces) ---
-                if do_track and self.track_gridpoint_loc is not None:
+                if do_track and self.track_gridpoint_locs:
                      prior_np = prior_term.detach().cpu().numpy()
                      like_np  = like_tau.detach().cpu().numpy()
                      
                      for vidx, obs_idx in enumerate(tracking_obs_indices):
-                         lat_target, lon_target = self.track_gridpoint_loc
-                         base_name, lev_target = specs[vidx]
-                         
-                         # Find offset
-                         found_target = False
-                         current_offset = 0
-                         for (v_info, res) in self.nm.mask_cor[block_idx]:
-                                (v_idx_loop, lev_loop) = v_info
-                                lat_n, lon_n = res
-                                N = int(lat_n) * int(lon_n)
-                                vname_loop = self.nm.var_names[v_idx_loop]
-                                is_target_var = (vname_loop == base_name)
-                                if lev_target is not None:
-                                    is_target_var = is_target_var and (int(lev_loop) == lev_target)
-                                if is_target_var:
-                                    target_flat_idx = lat_target * int(lon_n) + lon_target
-                                    if target_flat_idx < N:
-                                        block_target_idx = current_offset + target_flat_idx
-                                        # Map to obs space
-                                        matches = _np.where(idx_ob == block_target_idx)[0]
-                                        if matches.size > 0:
-                                            k_idx = matches[0]
-                                            values_force_prior_gridpoint[vidx, :] = prior_np[:, k_idx]
-                                            values_force_like_gridpoint[vidx, :]  = like_np[:, k_idx]
-                                            found_target = True
-                                current_offset += N
-                                if found_target: break
-                     
-                     if xt_force_prior_gridpoint is not None:
-                         xt_force_prior_gridpoint[cycle_k, block_idx, i-1, :, :] = values_force_prior_gridpoint
-                         xt_force_like_gridpoint[cycle_k, block_idx, i-1, :, :] = values_force_like_gridpoint
+                         for pt_idx, loc in enumerate(self.track_gridpoint_locs):
+                             lat_target, lon_target = loc
+                             base_name, lev_target = specs[vidx]
+                             
+                             # Find offset
+                             found_target = False
+                             current_offset = 0
+                             for (v_info, res) in self.nm.mask_cor[block_idx]:
+                                    (v_idx_loop, lev_loop) = v_info
+                                    lat_n, lon_n = res
+                                    N = int(lat_n) * int(lon_n)
+                                    vname_loop = self.nm.var_names[v_idx_loop]
+                                    is_target_var = (vname_loop == base_name)
+                                    if lev_target is not None:
+                                        is_target_var = is_target_var and (int(lev_loop) == lev_target)
+                                    if is_target_var:
+                                        target_flat_idx = lat_target * int(lon_n) + lon_target
+                                        if target_flat_idx < N:
+                                            block_target_idx = current_offset + target_flat_idx
+                                            # Map to obs space
+                                            matches = _np.where(idx_ob == block_target_idx)[0]
+                                            if matches.size > 0:
+                                                k_idx = matches[0]
+                                                values_force_prior_gridpoint[vidx, pt_idx, :] = prior_np[:, k_idx]
+                                                values_force_like_gridpoint[vidx, pt_idx, :]  = like_np[:, k_idx]
+                                                found_target = True
+                                        
+                                    current_offset += N
+                                    if found_target:
+                                        break
+                                        
+                # Update NetCDF with force components
+                if do_track and xt_force_prior_gridpoint is not None:
+                     xt_force_prior_gridpoint[cycle_k, block_idx, i-1, :, :, :] = values_force_prior_gridpoint
+                     xt_force_like_gridpoint[cycle_k, block_idx, i-1, :, :, :] = values_force_like_gridpoint
                 
                 # [USER-REQUEST] Collect pressure data for plotting
                 if do_plot_pressure and do_track:
