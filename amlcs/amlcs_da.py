@@ -54,7 +54,11 @@ def main():
     if 'scalefact' in df_par.columns:
         scalefact = float(df_par['scalefact'].iloc[0])
         
-    print(f"Nonlinear Obs: {nonlinear_obs}, Scale Factor: {scalefact}")
+    wind_nonlinear_operator = False
+    if 'wind_nonlinear_operator' in df_par.columns:
+        wind_nonlinear_operator = bool(df_par['wind_nonlinear_operator'].iloc[0])
+        
+    print(f"Nonlinear Obs: {nonlinear_obs}, Scale Factor: {scalefact}, Wind Nonlinear Operator: {wind_nonlinear_operator}")
     
     list_k = [int(v) for v in l_snap];
 
@@ -130,7 +134,7 @@ def main():
     if len(err_obs) > 10: wind_err['WDG1'] = err_obs[10]
     if len(err_obs) > 11: wind_err['WSG1'] = err_obs[11]
     
-    seq_da = sequential_method(method).get_instance(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err);
+    seq_da = sequential_method(method).get_instance(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err);
     
     ob.build_observational_network(gs, nm, s=s);
     ob.build_synthetic_observations(nm, rs, M); 

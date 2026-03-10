@@ -452,12 +452,12 @@ class EnKF_MC_obs(ensemble_DA):
                                            new_H_rows.append((local_idx, grad))
 
                        # Define Physics
-                       def calc_wdg(u,v): return np.arctan2(v,u)
+                       def calc_wdg(u,v): return np.arctan2(u,v)
                        def calc_wsg(u,v): return np.sqrt(u**2 + v**2)
                        
                        def grad_wdg(u,v,mode):
                            s2 = max(u**2+v**2, 1e-6)
-                           return -v/s2 if mode=='u' else u/s2
+                           return v/s2 if mode=='u' else -u/s2
                        
                        def grad_wsg(u,v,mode):
                            sm = max(np.sqrt(u**2+v**2), 1e-6)
@@ -586,6 +586,11 @@ class EnKF_MC_obs(ensemble_DA):
 ##########################################################################################
 class LETKF(ensemble_DA):
             
+    def __init__(self, nm, infla, Nens, wind_nonlinear_operator=False, wind_err=None):
+        super().__init__(nm, infla, Nens)
+        self.wind_nonlinear_operator = wind_nonlinear_operator
+        self.wind_err = wind_err if wind_err is not None else {}
+        
     
     def prepare_background(self):
         mask_cor = self.nm.mask_cor;
@@ -602,23 +607,33 @@ class LETKF(ensemble_DA):
 
     def prepare_analysis(self, ob, k, args = None):
         self.y = [];
+        self.current_k = k
+        self._cycle_k = k
+        self.ob = ob
         Nens = self.Nens;
         mask_cor = self.nm.mask_cor;
         N_blocks = len(mask_cor);
         for block in range(0, N_blocks):
             self.y.append(ob.y_obs[k][block]); 
+            
+        self.Y_unp = [ob.y_obs[k][block] for block in range(0, N_blocks)]
         self.nm.gs.compute_local_boxobs(ob.obs_H_sparse);
     
     def perform_assimilation(self, ob):
         self.XA_map = [];
-        for XB_info, y_block, R_info, H_block, lobs_block in zip(self.XB_map, self.y, ob.obs_R_sparse, ob.obs_H_sparse, self.nm.gs.lbo_obs):
+        for block_idx, (XB_info, y_block, R_info, H_block, lobs_block) in enumerate(zip(self.XB_map, self.y, ob.obs_R_sparse, ob.obs_H_sparse, self.nm.gs.lbo_obs)):
             XB_block = XB_info['XB_b'];
             xb_block = XB_info['xb_b'];
             DX_block = XB_info['DX_b'];
             lbo_block = XB_info['lbo_b'];
             Ri_block  = R_info['Ri'];
-            XA_block = self.perform_assimilation_block(XB_block, xb_block, DX_block, H_block, Ri_block, y_block, lbo_block, lobs_block);
+            R_block   = R_info['R']
+            XA_block = self.perform_assimilation_block(XB_block, xb_block, DX_block, H_block, Ri_block, y_block, lbo_block, lobs_block, block_idx=block_idx);
             self.XA_map.append(XA_block);
+            
+            # write unified Netcdf files for this block/cycle
+            self._write_unified_nc_block(block_idx, H_block, R_block, XB_block, XA_block)
+            
         self.map_vector_states(); #Update ensemble folders
         
     
@@ -653,7 +668,7 @@ class LETKF(ensemble_DA):
         
         
     
-    def perform_assimilation_block(self, XB, xb, DX, H, Ri, y, lbo_info, lobs):
+    def perform_assimilation_block(self, XB, xb, DX, H, Ri, y, lbo_info, lobs, block_idx=None):
 
           
           n, Nens = XB.shape;
@@ -668,6 +683,32 @@ class LETKF(ensemble_DA):
           
           XA = np.zeros((n, Nens));
           
+          # Nonlinear Wind Setup
+          ob = getattr(self, 'ob', None)
+          k_step = getattr(self, 'current_k', 0)
+          
+          block_var_name = None
+          block_level = None
+          is_wind_update = False
+          wind_mode = None
+          
+          # Identify if this block is UG1 or VG1
+          if block_idx is not None and len(self.nm.mask_cor) > block_idx and len(self.nm.mask_cor[block_idx]) > 0:
+               v_inf, _ = self.nm.mask_cor[block_idx][0]
+               block_var_idx, block_level = v_inf
+               block_var_name = self.nm.var_names[block_var_idx]
+          
+          if getattr(self, 'wind_nonlinear_operator', False):
+               if block_var_name == 'UG1': wind_mode = 'u'
+               elif block_var_name == 'VG1': wind_mode = 'v'
+               
+               if wind_mode and ob is not None:
+                    # Partner block logic
+                    partner_block_idx = block_idx + 1 if wind_mode == 'u' else block_idx - 1
+                    if 0 <= partner_block_idx < len(self.XB_map):
+                         partner_info = self.XB_map[partner_block_idx]
+                         partner_XB = partner_info['XB_b'] # Full block for partner
+                         is_wind_update = True
           
           for i in range(0, n):
               #local box for model component i
@@ -675,27 +716,162 @@ class LETKF(ensemble_DA):
               gp_i, = np.where(lbo_i==i);
               xb_i = xb[lbo_i];
               XB_i = XB[lbo_i];
-              #local observation operator
+              DX_i = DX[lbo_i];
+              
+              #local observation operator (Linear)
               H_ind = np.array(lobs[i]).astype('int32'); #local observed components
-              #print(f'H_ind {H_ind}');
               m_i = H_ind.size;
-              if m_i>0:
-                 n_i = xb_i.size;
+              
+              n_i = xb_i.size;
+              
+              linear_active = (m_i > 0)
+              y_i_lin, H_i_lin, Ri_i_lin = None, None, None
+              
+              if linear_active:
                  I = np.arange(0, m_i);
                  J = H_ind;
-                 H_i = spa.coo_matrix((np.ones(m_i),(I,J)), shape=(m_i, n_i));
-                 DX_i = DX[lbo_i];
-                 y_i  = y_model[lbo_i[H_ind]];
-                 Ri_i = np.diag(Ri_space[lbo_i[H_ind], lbo_i[H_ind]]).reshape((m_i, m_i)); #local data error covariance matrix
-                 XA_i = self.perform_assimilation_local_box(XB_i, xb_i, DX_i, H_i, Ri_i, y_i);
-                 #perform_assimilation_local_box(self, XB, xb, DX, H, Ri, y)
+                 H_i_lin = spa.coo_matrix((np.ones(m_i),(I,J)), shape=(m_i, n_i));
+                 y_i_lin = y_model[lbo_i[H_ind]];
+                 Ri_i_lin = np.diag(Ri_space[lbo_i[H_ind], lbo_i[H_ind]]).reshape((m_i, m_i)); #local data error covariance matrix
+              
+              # Determine if we should dynamically add nonlinear wind obs
+              wdg_vals, wsg_vals = [], []
+              wdg_sig, wsg_sig = [], []
+              wdg_pred, wsg_pred = [], []
+              
+              if is_wind_update:
+                  partner_xb_i = partner_info['xb_b'][lbo_i]
+                  partner_DX_i = partner_info['DX_b'][lbo_i]
+                  
+                  # u and v background states at the gridpoints (n_i, 1) and (n_i, Nens)
+                  if wind_mode == 'u':
+                      u_mean, v_mean = xb_i, partner_xb_i
+                      u_pert, v_pert = DX_i, partner_DX_i
+                  else:
+                      u_mean, v_mean = partner_xb_i, xb_i
+                      u_pert, v_pert = partner_DX_i, DX_i
+                      
+                  u_ens = u_mean + u_pert
+                  v_ens = v_mean + v_pert
+                  
+                  # Find which local points (0 to n_i-1) actually have wind stations
+                  def get_wind_local(wname):
+                      local_obs_vals = []
+                      local_obs_sig = []
+                      local_pred_ens = []
+                      
+                      if wname in ob.wind_obs and block_level in ob.wind_obs[wname]:
+                          meta = ob.wind_obs[wname][block_level]
+                          if k_step < len(ob.y_wind_obs) and wname in ob.y_wind_obs[k_step]:
+                              data = ob.y_wind_obs[k_step][wname].get(block_level)
+                              if data is not None:
+                                  glob_stations = np.array(meta['stations']) # Stations globally
+                                  data_flat = data.flatten()
+                                  err_std = self.wind_err.get(wname, 1.0)
+                                  
+                                  # Match lbo_i against glob_stations
+                                  for local_idx, global_point in enumerate(lbo_i):
+                                      pos = np.where(glob_stations == global_point)[0]
+                                      if pos.size > 0:
+                                          val = data_flat[pos[0]]
+                                          local_obs_vals.append(val)
+                                          local_obs_sig.append(err_std)
+                                          
+                                          # Ensemble predictions at this local point
+                                          u_e = u_ens[local_idx, :]
+                                          v_e = v_ens[local_idx, :]
+                                          if wname == 'WDG1':
+                                              pred = np.arctan2(u_e, v_e) # (user wants arctan2(u,v))
+                                          else: # WSG1
+                                              pred = np.sqrt(u_e**2 + v_e**2)
+                                              
+                                          local_pred_ens.append(pred)
+                                          
+                      return np.array(local_obs_vals), np.array(local_obs_sig), np.array(local_pred_ens)
+                  
+                  wdg_vals, wdg_sig, wdg_pred = get_wind_local('WDG1')
+                  wsg_vals, wsg_sig, wsg_pred = get_wind_local('WSG1')
+
+              nonlinear_m = len(wdg_vals) + len(wsg_vals)
+              
+              if linear_active or nonlinear_m > 0:
+                  
+                  total_m = m_i + nonlinear_m
+                  
+                  # 1. Linear part
+                  if linear_active:
+                      Yb_lin = H_i_lin @ DX_i  # (m_i, Nens)
+                      d_lin = y_i_lin - H_i_lin @ xb_i # (m_i, 1)
+                  else:
+                      Yb_lin = np.empty((0, Nens))
+                      d_lin = np.empty((0, 1))
+                      Ri_i_lin = np.empty((0, 0))
+                      
+                  # 2. Nonlinear part
+                  Yb_non = []
+                  d_non = []
+                  Ri_non_diag = []
+                  
+                  def add_nonlinear_obs(y_real, y_pred_ens, sig, wname_current):
+                      for k in range(len(y_real)):
+                          y_pred_mean = np.mean(y_pred_ens[k, :])
+                          yb_row = y_pred_ens[k, :] - y_pred_mean
+                          
+                          if 'WDG' in wname_current:
+                              yb_row = (yb_row + np.pi) % (2 * np.pi) - np.pi
+                          
+                          Yb_non.append(yb_row)
+                          
+                          perturbed_y = y_real[k] + sig[k] * np.random.randn()
+                          innov = perturbed_y - y_pred_mean
+                          if 'WDG' in wname_current:
+                              innov = (innov + np.pi) % (2 * np.pi) - np.pi
+                          
+                          d_non.append([innov])
+                          Ri_non_diag.append(1.0 / (sig[k]**2))
+
+                  if len(wdg_vals) > 0:
+                      add_nonlinear_obs(wdg_vals, wdg_pred, wdg_sig, 'WDG')
+                  
+                  if len(wsg_vals) > 0:
+                      add_nonlinear_obs(wsg_vals, wsg_pred, wsg_sig, 'WSG')
+                      
+                  if nonlinear_m > 0:
+                      Yb_non_arr = np.array(Yb_non)
+                      d_non_arr = np.array(d_non)
+                      Ri_non_arr = np.diag(Ri_non_diag)
+                  else:
+                      Yb_non_arr = np.empty((0, Nens))
+                      d_non_arr = np.empty((0, 1))
+                      Ri_non_arr = np.empty((0, 0))
+                      
+                  # 3. Combine Linear and Nonlinear
+                  Yb_total = np.vstack([Yb_lin, Yb_non_arr]) if linear_active and nonlinear_m > 0 else (Yb_lin if linear_active else Yb_non_arr)
+                  d_total = np.vstack([d_lin, d_non_arr]) if linear_active and nonlinear_m > 0 else (d_lin if linear_active else d_non_arr)
+                  
+                  Ri_total = np.zeros((total_m, total_m))
+                  if linear_active: Ri_total[:m_i, :m_i] = Ri_i_lin
+                  if nonlinear_m > 0: Ri_total[m_i:, m_i:] = Ri_non_arr
+                  
+                  # 4. Local Letkf SVD update (inlining perform_assimilation_local_box logic)
+                  Pa_Nens = (Nens-1)*np.eye(Nens) + Yb_total.T @ ( Ri_total @ Yb_total );
+                  Q_temp = Yb_total.T @ (Ri_total @ d_total);
+                  
+                  U, S, _ = np.linalg.svd(Pa_Nens, full_matrices=False);
+                  
+                  Pa_sqrt = U @ ( np.diag(np.sqrt(Nens/S)) @ U.T );
+                  Pa_invs = U @ ( np.diag(1/S) @ U.T );
+                  
+                  wa = Pa_invs @ Q_temp;
+                  xa_i = xb_i + DX_i @ wa;
+                  XA_i = xa_i + DX_i @ Pa_sqrt;
+
               else:
                  XA_i = XB_i;
                  
               XA[i, :] = XA_i[gp_i, :]; 
           
           return XA;
-          #XB, xb, DX, H, Ri, y):
           
 
 
@@ -1762,8 +1938,8 @@ class ReverseSDE(ensemble_DA):
 
                      # --- WDG Contribution ---
                      if obs_wdg_vals is not None:
-                         # WDG = atan2(v, u)
-                         pred_wdg = _torch.atan2(v_vec, u_vec) # (Nens, m)
+                         # WDG = atan2(u, v)
+                         pred_wdg = _torch.atan2(u_vec, v_vec) # (Nens, m)
                          
                          # Residual (Innovation)
                          diff = pred_wdg - obs_wdg_vals 
@@ -1772,9 +1948,9 @@ class ReverseSDE(ensemble_DA):
                          
                          # Gradient of h w.r.t current state
                          if wind_mode == "updating_u":
-                             grad_h_xphy = -v_vec / res_sq
+                             grad_h_xphy = v_vec / res_sq
                          else:
-                             grad_h_xphy = u_vec / res_sq
+                             grad_h_xphy = -u_vec / res_sq
                              
                          # Chain rule
                          grad_h_xt = grad_h_xphy * std_X0
@@ -1988,7 +2164,7 @@ class sequential_method:
       def __init__(self, method_name):
           self.method_name = method_name;
       
-      def get_instance(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_err=None):
+      def get_instance(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None):
         if self.method_name == "EnKF_MC":
             return EnKF_MC(nm, infla, Nens);
         elif self.method_name == "EnKF_MC_obs":
@@ -1997,7 +2173,7 @@ class sequential_method:
         elif self.method_name == "ReverseSDE":
              return ReverseSDE(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err);
         elif self.method_name == "LETKF":
-            return LETKF(nm, infla, Nens);
+            return LETKF(nm, infla, Nens, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err);
         else:
             print("Method not found : ", self.method_name);
             return None;

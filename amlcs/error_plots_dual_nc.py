@@ -17,15 +17,15 @@ Generates two families of plots for each variable:
 
 # FULL PATHS to the two experiment directories you want to compare:
 
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_direction_only/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_direction_only/data"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/direction_only/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/direction_only/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
 
 # Number of assimilation cycles to read (0-based indexing)
 # Number of assimilation cycles to read (0-based indexing)
-CYCLES = list(range(20))
+CYCLES = list(range(5))
 
 # Base directory for reference solutions (Truth/NoDA)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
@@ -37,14 +37,14 @@ VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
 ANCHOR = "step1"
 
 # Scale mode: "log", "linear", or "both"
-SCALE_MODE = "both"
+SCALE_MODE = "linear"
 
 # Generate log plots? (Set False for absolute-only plots)
 GENERATE_LOG_PLOTS = True
 
 # Explicit Output Directory (optional)
 # If set, plots will be saved here directly.
-OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/wind_direction_only/enkf_vs_reverseSDE"
+OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/direction_only/LETKF_vs_reverseSDE"
 
 # Output directory name (ignored if OUTPUT_DIR is set)
 PLOT_DIR_NAME = None  
@@ -321,7 +321,6 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
     for cycle_k in cycles:
         try:
             # Find the cycle file
-            # Find the cycle file
             if method == "ReverseSDE":
                 # Try specific first, then unified
                 cycle_file = exp_path / f"reverseSDE_cycle{cycle_k}.nc"
@@ -331,6 +330,10 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
                 cycle_file = exp_path / f"unified_cycle{cycle_k}.nc"
             else:
                 cycle_file = exp_path / f"{method.lower()}_cycle{cycle_k}.nc"
+                
+            # Generic fallback to unified_cycle
+            if not cycle_file.exists():
+                cycle_file = exp_path / f"unified_cycle{cycle_k}.nc"
             
             if not cycle_file.exists():
                 # print(f"Warning: {cycle_file} not found") # Suppress

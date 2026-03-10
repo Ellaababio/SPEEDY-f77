@@ -18,8 +18,8 @@ from netCDF4 import Dataset
 ###############################################################################
 
 # List of files or directories to inspect
-PATHS_TO_INSPECT = ["/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_only_m2/data/unified_cycle19.nc",
-"/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/unified_cycle5.nc"]
+PATHS_TO_INSPECT = ["/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/unified_cycle0.nc",
+"/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/unified_cycle0.nc"]
     # Add more paths here (can be directory or specific file)
 
 

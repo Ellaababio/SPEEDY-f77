@@ -270,7 +270,7 @@ class observation:
                           
                           if w_name == 'WDG1':
                               # True Wind Direction
-                              true_wdg = np.arctan2(v_lev, u_lev)
+                              true_wdg = np.arctan2(u_lev, v_lev)
                               # Add Noise
                               obs_wdg = true_wdg + err_std * np.random.randn(len(stations))
                               y_wind_t[w_name][lev] = obs_wdg
