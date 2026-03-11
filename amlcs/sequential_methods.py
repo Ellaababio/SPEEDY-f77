@@ -511,28 +511,15 @@ class EnKF_MC_obs(ensemble_DA):
           if self.nonlinear_obs:
               sf = self.scalefact
               
-              # Split Standard vs Wind (Wind is kept linear/physical)
+              # Split Standard vs Wind (Wind already handled with its own nonlinear operators)
               Hb_std = Hb_X[:n_std, :]
               Ys_std = Ys[:n_std, :]
               
-              mu = np.mean(Hb_std, axis=1, keepdims=True)
-              sigma_std = np.std(Hb_std, axis=1, keepdims=True)
-              sigma_std = np.maximum(sigma_std, 1e-6)
+              # Apply nonlinear forward operator h(x) = arctan(sf * Hx) on ensemble predictions
+              # Observations are already in h-space (generated as arctan(sf*Hx) + noise in observation.py)
+              Hb_final_std = np.arctan(sf * Hb_std)
               
-              # Standard EnKF Nonlinear Transform
-              Ys_clamped = np.clip(Ys_std, -1.55, 1.55)
-              Ys_lin = np.tan(Ys_clamped) / sf
-              Ys_norm = (Ys_lin - mu) / sigma_std
-              Ys_final_std = np.arctan(sf * Ys_norm)
-              
-              Hb_norm = (Hb_std - mu) / sigma_std
-              Hb_final_std = np.arctan(sf * Hb_norm)
-              
-              Ds_std = Ys_final_std - Hb_final_std
-              
-              # Scaling Factor
-              scale_vec = (sf / sigma_std).flatten()
-              H_spar[:n_std, :] *= scale_vec[:, None]
+              Ds_std = Ys_std - Hb_final_std
               
               # Re-assemble Ds with Wind Part
               if new_Ys:
@@ -540,8 +527,6 @@ class EnKF_MC_obs(ensemble_DA):
                   Ds_wind = Ys[n_std:, :] - Hb_X[n_std:, :]
                   
                   # Apply Circular Innovation Correction for WDG
-                  # Determine which rows are WDG relative to the new block
-                  # new_is_wdg is length n_new.
                   is_wdg_arr = np.array(new_is_wdg, dtype=bool)
                   if np.any(is_wdg_arr):
                         # Force diff to [-pi, pi]
@@ -586,8 +571,10 @@ class EnKF_MC_obs(ensemble_DA):
 ##########################################################################################
 class LETKF(ensemble_DA):
             
-    def __init__(self, nm, infla, Nens, wind_nonlinear_operator=False, wind_err=None):
+    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None):
         super().__init__(nm, infla, Nens)
+        self.nonlinear_obs = bool(nonlinear_obs)
+        self.scalefact = float(scalefact)
         self.wind_nonlinear_operator = wind_nonlinear_operator
         self.wind_err = wind_err if wind_err is not None else {}
         
@@ -724,15 +711,23 @@ class LETKF(ensemble_DA):
               
               n_i = xb_i.size;
               
-              linear_active = (m_i > 0)
+              has_standard_obs = (m_i > 0)
               y_i_lin, H_i_lin, Ri_i_lin = None, None, None
               
-              if linear_active:
+              if has_standard_obs:
                  I = np.arange(0, m_i);
                  J = H_ind;
                  H_i_lin = spa.coo_matrix((np.ones(m_i),(I,J)), shape=(m_i, n_i));
                  y_i_lin = y_model[lbo_i[H_ind]];
                  Ri_i_lin = np.diag(Ri_space[lbo_i[H_ind], lbo_i[H_ind]]).reshape((m_i, m_i)); #local data error covariance matrix
+
+                 if self.nonlinear_obs:
+                     sf = self.scalefact
+                     # Apply nonlinear forward operator h(x) = arctan(sf * Hx) on ensemble
+                     Hb_i_ens = H_i_lin @ XB_i  # (m_i, Nens)
+                     Hb_i_ens_nl = np.arctan(sf * Hb_i_ens)
+                     Hb_i_ens_nl_mean = np.mean(Hb_i_ens_nl, axis=1, keepdims=True)
+
               
               # Determine if we should dynamically add nonlinear wind obs
               wdg_vals, wsg_vals = [], []
@@ -794,14 +789,20 @@ class LETKF(ensemble_DA):
 
               nonlinear_m = len(wdg_vals) + len(wsg_vals)
               
-              if linear_active or nonlinear_m > 0:
+              if has_standard_obs or nonlinear_m > 0:
                   
                   total_m = m_i + nonlinear_m
                   
-                  # 1. Linear part
-                  if linear_active:
-                      Yb_lin = H_i_lin @ DX_i  # (m_i, Nens)
-                      d_lin = y_i_lin - H_i_lin @ xb_i # (m_i, 1)
+                  # 1. Standard obs part
+                  if has_standard_obs:
+                      if self.nonlinear_obs:
+                          # Nonlinear forward operator: h(x) = arctan(sf * Hx)
+                          # Observations already in h-space from observation.py
+                          Yb_lin = Hb_i_ens_nl - Hb_i_ens_nl_mean  # (m_i, Nens)
+                          d_lin = y_i_lin - Hb_i_ens_nl_mean  # (m_i, 1)
+                      else:
+                          Yb_lin = H_i_lin @ DX_i  # (m_i, Nens)
+                          d_lin = y_i_lin - H_i_lin @ xb_i # (m_i, 1)
                   else:
                       Yb_lin = np.empty((0, Nens))
                       d_lin = np.empty((0, 1))
@@ -846,11 +847,11 @@ class LETKF(ensemble_DA):
                       Ri_non_arr = np.empty((0, 0))
                       
                   # 3. Combine Linear and Nonlinear
-                  Yb_total = np.vstack([Yb_lin, Yb_non_arr]) if linear_active and nonlinear_m > 0 else (Yb_lin if linear_active else Yb_non_arr)
-                  d_total = np.vstack([d_lin, d_non_arr]) if linear_active and nonlinear_m > 0 else (d_lin if linear_active else d_non_arr)
+                  Yb_total = np.vstack([Yb_lin, Yb_non_arr]) if has_standard_obs and nonlinear_m > 0 else (Yb_lin if has_standard_obs else Yb_non_arr)
+                  d_total = np.vstack([d_lin, d_non_arr]) if has_standard_obs and nonlinear_m > 0 else (d_lin if has_standard_obs else d_non_arr)
                   
                   Ri_total = np.zeros((total_m, total_m))
-                  if linear_active: Ri_total[:m_i, :m_i] = Ri_i_lin
+                  if has_standard_obs: Ri_total[:m_i, :m_i] = Ri_i_lin
                   if nonlinear_m > 0: Ri_total[m_i:, m_i:] = Ri_non_arr
                   
                   # 4. Local Letkf SVD update (inlining perform_assimilation_local_box logic)
@@ -1586,27 +1587,19 @@ class ReverseSDE(ensemble_DA):
             # (B) TOGGLE: LINEAR vs NONLINEAR OBSERVATION HANDLING
             # ============================================================
             if self.nonlinear_obs:
-                # --- Nonlinear case (Prototype logic) ---
-                eps = 1e-8
+                # --- Nonlinear case ---
+                # Observations are already in h-space: y = arctan(sf * Hx) + noise
                 sf = float(getattr(self, "scalefact", 1.0))
 
-                # Clamp observations before applying tan() to avoid Inf
-                y_clamped = _torch.clamp(y, -1.55, 1.55)
-                tan_y = _torch.tan(y_clamped)
+                # Normalize observations (same as linear: center and scale)
+                y_n = (y - mean_X0) / std_X0
+                sigma_n = sigma / std_X0
 
-                # Nonlinear normalization following Rev_SDE.normalize()
-                # Note: operations are now pure Torch
-                y_n = _torch.atan(((tan_y / sf - mean_X0) / std_X0) * sf)
-
-                sigma_eff = sigma.clone()
-                # Use torch.where for conditional logic
-                sigma_eff = _torch.where(_torch.abs(y_n) < 1.55, sigma_eff, sigma_eff / 1.0e-6)
-                sigma_n = sigma_eff
-
-                # Nonlinear ensemble normalization (same transform)
+                # Nonlinear ensemble normalization: apply h(x) = arctan(sf * x_normalized)
                 X0_obs_n_t = _torch.atan(sf * X0_obs_n)
                 y_n_t = y_n
                 sigma_n_t = sigma_n
+
 
             else:
                 # --- Linear case (Vanilla logic) ---
@@ -2159,7 +2152,7 @@ class sequential_method:
         elif self.method_name == "ReverseSDE":
              return ReverseSDE(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err);
         elif self.method_name == "LETKF":
-            return LETKF(nm, infla, Nens, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err);
+            return LETKF(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err);
         else:
             print("Method not found : ", self.method_name);
             return None;

@@ -56,7 +56,29 @@ def inspect_file(filepath, verbose=False, label=""):
     print(f"   Full Path: {filepath}")
     try:
         with Dataset(filepath, 'r') as nc:
-            # Check Dimensions
+            if 'sde_tracking' in os.path.basename(filepath):
+                print(f"   [SDE Tracking File]")
+                n_cycle = len(nc.dimensions.get('cycle', []))
+                n_block = len(nc.dimensions.get('block', []))
+                n_psteps = len(nc.dimensions.get('psteps', []))
+                n_var = len(nc.dimensions.get('var', []))
+                n_pts = len(nc.dimensions.get('pts', [])) if 'pts' in nc.dimensions else 0
+                n_ens = len(nc.dimensions.get('ens', []))
+                print(f"   Dimensions -> Cycles: {n_cycle}, Blocks: {n_block}, SDE Steps: {n_psteps}, Vars: {n_var}, Ens: {n_ens}, Pts: {n_pts}")
+                
+                print(f"   {'Variable':<25} | {'Min':<10} | {'Max':<10} | {'Mean':<10} | {'Status':<10}")
+                print("   " + "-"*70)
+                for vname in nc.variables:
+                    if vname == 'var_names': continue
+                    data = nc.variables[vname][:]
+                    stats = get_stats(data)
+                    if not stats['valid']:
+                        print(f"   {vname:<25} | {'N/A':<10} | {'N/A':<10} | {'N/A':<10} | NaN/Inf! ({stats['n_nan']} NaNs, {stats['n_inf']} Infs)")
+                    else:
+                        print(f"   {vname:<25} | {stats['min']:<10.2e} | {stats['max']:<10.2e} | {stats['mean']:<10.2e} | OK")
+                return
+
+            # Check Dimensions (Standard DA output)
             if 'lat' in nc.dimensions and 'lon' in nc.dimensions:
                 nlat = len(nc.dimensions['lat'])
                 nlon = len(nc.dimensions['lon'])
@@ -201,7 +223,10 @@ def main():
             labeled_files.append((path, path))
         elif os.path.isdir(path):
             files = glob.glob(os.path.join(path, "unified_cycle*.nc"))
-            files.sort(key=lambda x: int(os.path.basename(x).split('cycle')[1].split('.')[0]) if 'cycle' in x else 0)
+            sde_files = glob.glob(os.path.join(path, "sde_tracking.nc"))
+            if files:
+                files.sort(key=lambda x: int(os.path.basename(x).split('cycle')[1].split('.')[0]) if 'cycle' in os.path.basename(x) else 0)
+            files.extend(sde_files)
             if not files:
                 files = glob.glob(os.path.join(path, "*.nc"))
                 files.sort()

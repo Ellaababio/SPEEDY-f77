@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from netCDF4 import Dataset
 
-SDE_FILE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_ps_only/data/sde_tracking.nc"
+SDE_FILE = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_ps_only/data_ps0001/sde_tracking.nc"
 
 def main():
     if not os.path.exists(SDE_FILE):

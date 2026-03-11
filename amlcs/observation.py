@@ -230,10 +230,8 @@ class observation:
                   
                   # Apply nonlinear operator if requested (Standard Vars)
                   if self.nonlinear_obs:
-                      # Determine which observations are linear vs WDG/WSG
-                      # Note: With WDG/WSG removed from state vector, this loop only sees linear vars
-                      # UNLESS we have other nonlinear vars in the future.
-                      pass 
+                      # Nonlinear observation operator: h(x) = arctan(sf * x)
+                      Hx = np.arctan(self.scalefact * Hx)
                   
                   # Add noise
                   y = Hx + R_sqrt @ np.random.randn(m_obs,1);
