@@ -2,6 +2,12 @@
 """
 Heatmaps + Time-Series (NetCDF Version)
 Generates animated GIFs and spatial mean time-series plots from NetCDF cycle files.
+
+Supports two modes:
+  DUAL_MODE = False  →  Single experiment (original behaviour)
+  DUAL_MODE = True   →  Side-by-side comparison of two experiments
+                         • Heatmap GIFs use a shared colorbar
+                         • Time-series are stacked (one panel per method)
 """
 
 import os
@@ -18,8 +24,16 @@ import cartopy.feature as cfeature
 from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
-# Experiment Directory (where cycle files are)
-EXP_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_vars_added_ps_only_obs/data"
+# Experiment Directories
+EXP_DIR   = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/v_arctan_0.1_sf_0.5/data"
+EXP_DIR_2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/v_arctan_0.1_sf_0.5/data"  # Second experiment (only used when DUAL_MODE = True)
+
+# Human-readable labels
+EXP_LABEL_1 = "ReverseSDE"
+EXP_LABEL_2 = "LETKF"
+
+# Dual mode toggle
+DUAL_MODE = True
 
 # Reference Directory (where 'snapshots' and 'free_run' are)
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
@@ -33,6 +47,13 @@ VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WSG1", "WDG1"]
 # Level index to plot (for 3D vars) - PSG1 is 2D so this is ignored for it
 LEVEL_IDX = 7  # Surface level for T21 (0 is top, 7 is bottom)
 
+# Nonlinear standard-observation settings used by the experiment.
+# When enabled, innovations for standard observed variables are computed in
+# observation space as y - atan(sf * xb) instead of mixing obs-space y with
+# physical-space xb.
+NONLINEAR_OBS = True
+SCALEFACT = 0.5
+
 # T21 grid dimensions
 NLAT, NLON = 32, 64
 
@@ -41,9 +62,21 @@ UNITS = {"UG1": "m/s", "VG1": "m/s", "TG1": "K", "TRG1": "g/kg", "PSG1": "log(ps
 
 # =============================================================
 
+def _circ_diff(a, b):
+    """Circular difference between angles: (a - b) mapped to [-pi, pi]."""
+    return (a - b + np.pi) % (2*np.pi) - np.pi
+
+
+def _standard_obs_innovation(obs_val: np.ndarray, xb: np.ndarray, var: str) -> np.ndarray:
+    """Compute innovations in the correct space for standard observations."""
+    if var == "WDG1":
+        return _circ_diff(obs_val, xb)
+    if NONLINEAR_OBS and var not in {"WSG1", "WDG1"}:
+        return obs_val - np.arctan(SCALEFACT * xb)
+    return obs_val - xb
+
 def _find_cycle_files(exp_path: Path):
     """Find available cycle files."""
-    # Try different patterns
     for pattern in ["reverseSDE_cycle*.nc", "unified_cycle*.nc", "enkf_cycle*.nc", "cycle*.nc"]:
         files = sorted(exp_path.glob(pattern))
         if files:
@@ -72,7 +105,6 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
             if field_name in nc.variables:
                 return nc.variables[field_name][:]
             
-            # Fallback: maybe it's not split? (unlikely for current schema but possible)
             return np.full((NLAT, NLON), np.nan)
         
         # 2. Raw variable name (for reference/truth files)
@@ -86,7 +118,6 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
                 return data[0, lev if "PSG" not in var else 0, :, :]
 
         if var == "WSG1":
-            # Try to read components
             if prefix:
                 u = _read_nc_field(nc_path, "UG1", lev, prefix)
                 v = _read_nc_field(nc_path, "VG1", lev, prefix)
@@ -97,7 +128,6 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
             if not np.all(np.isnan(u)) and not np.all(np.isnan(v)):
                  return np.sqrt(u**2 + v**2)
 
-        # 4. Fallback for WDG1 (Wind Direction) if derived
         if var == "WDG1":
             if prefix:
                 u = _read_nc_field(nc_path, "UG1", lev, prefix)
@@ -111,189 +141,304 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
 
     return np.full((NLAT, NLON), np.nan)
 
-def main():
-    exp_path = Path(EXP_DIR).resolve()
-    ref_path = Path(REFERENCE_DIR).resolve()
-    out_dir = exp_path / OUT_DIR_NAME
-    out_dir.mkdir(exist_ok=True, parents=True)
-    
-    print(f"Processing Experiment: {exp_path}")
-    print(f"Reference Directory: {ref_path}")
-    print(f"Output Directory: {out_dir}")
 
-    # Discover cycles
+# ─────────────────────────────────────────────────────────────
+#  Helpers shared by both modes
+# ─────────────────────────────────────────────────────────────
+def _collect_experiment(exp_path, ref_path, var, cycles, files):
+    """Return frames dict and ts_data dict for one experiment."""
+    # Anchor (NoDA error at cycle 0)
+    free_run_0 = ref_path / "free_run" / "free_run_0.nc"
+    truth_0    = ref_path / "snapshots" / "reference_solution_0.nc"
+
+    anchor_val = np.nan
+    if free_run_0.exists() and truth_0.exists():
+        fr = _read_nc_field(free_run_0, var, LEVEL_IDX, prefix=None)
+        tr = _read_nc_field(truth_0,    var, LEVEL_IDX, prefix=None)
+        if var == "WDG1":
+            anchor_val = np.nanmean(np.abs(_circ_diff(fr, tr)))
+        else:
+            anchor_val = np.nanmean(np.abs(fr - tr))
+
+    ts_data = {"innovation": [], "increment": [], "ana_truth": [anchor_val]}
+    frames  = {"innovation": [], "increment": [], "ana_truth": []}
+
+    for i, cycle_k in enumerate(cycles):
+        cycle_file = files[i]
+        truth_file = ref_path / "snapshots" / f"reference_solution_{cycle_k}.nc"
+
+        xb = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="xb_mean")
+        xa = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="xa_mean")
+        xt = _read_nc_field(truth_file, var, LEVEL_IDX, prefix=None)
+        obs_val = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="obs")
+
+        if var == "WDG1":
+            innov = _standard_obs_innovation(obs_val, xb, var)
+            incr  = _circ_diff(xa, xb)
+            err   = np.abs(_circ_diff(xa, xt))
+        else:
+            innov = _standard_obs_innovation(obs_val, xb, var)
+            incr  = xa - xb
+            err   = np.abs(xa - xt)
+
+        frames["innovation"].append(innov)
+        frames["increment"].append(incr)
+        frames["ana_truth"].append(err)
+
+        ts_data["innovation"].append(np.nanmean(innov))
+        ts_data["increment"].append(np.nanmean(incr))
+        ts_data["ana_truth"].append(np.nanmean(err))
+
+    return frames, ts_data
+
+
+# ─────────────────────────────────────────────────────────────
+#  SINGLE-EXPERIMENT MODE
+# ─────────────────────────────────────────────────────────────
+def _run_single(exp_path, ref_path, out_dir):
     files = _find_cycle_files(exp_path)
     if not files:
-        print("No cycle files found!")
-        return
-        
-    # Sort files by cycle number
+        print("No cycle files found!"); return
     files.sort(key=_extract_cycle_num)
     cycles = [_extract_cycle_num(f) for f in files]
     print(f"Found {len(cycles)} cycles: {cycles}")
-    
-    # Pre-define human labels
+
     diff_labels = {
         "innovation": "Innovation (Obs - Background)",
         "increment":  "Increment (Analysis - Background)",
         "ana_truth":  "Analysis Error |Analysis - Truth|",
-        "background": "Background State",
-        "analysis": "Analysis State"
     }
 
-    # Loop over variables
     for var in VARS:
         print(f"\n=== Processing {var} ===")
-        
-        # Store spatial means for time series
-        ts_data = {"innovation": [], "increment": [], "ana_truth": []}
-        
-        # Prepare 3D arrays for GIF min/max calculation [cycles, lat, lon]
-        # We'll compute these on the fly to save memory, but we need ranges first?
-        # Actually, let's collect all frames first to normalize colormap
-        
-        frames = {"innovation": [], "increment": [], "ana_truth": []}
-        
-        for i, cycle_k in enumerate(cycles):
-            cycle_file = files[i]
-            truth_file = ref_path / "snapshots" / f"reference_solution_{cycle_k}.nc"
-            # We don't necessarily need free_run here unless we want NoDA error
-            
-            # Read fields
-            xb = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="xb_mean")  # Background
-            xa = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="xa_mean")  # Analysis
-            xt = _read_nc_field(truth_file, var, LEVEL_IDX, prefix=None)       # Truth (raw var name)
-            
-            # Custom read for Innovation (Obs)
-            # Try to read 'obs' prefix using helper, or custom fallback if naming is weird
-            obs_val = _read_nc_field(cycle_file, var, LEVEL_IDX, prefix="obs")
-            
-            # If helper returned NaNs (because variable might be named differently or missing),
-            # we check manually only if needed. But _read_nc_field with prefix="obs" does exactly what we want:
-            # looks for obs_{var}_lev{k}. 
-            
-            # If it's pure NaN, it means obs were missing/not assimilated this cycle/loc.
-            # That's fine, difference will be NaN.
-            
-            # --- COMPUTE DIFFERENCES ---
-            
-            # --- COMPUTE DIFFERENCES ---
-            
-            if var == "WDG1":
-                # Circular difference: (a - b + pi) % 2pi - pi
-                def circ_diff(a, b):
-                    return (a - b + np.pi) % (2*np.pi) - np.pi
-                
-                innov = circ_diff(obs_val, xb)
-                incr  = circ_diff(xa, xb)
-                err   = np.abs(circ_diff(xa, xt))
-            else:
-                # Innovation: Obs - Background (skip if obs is missing)
-                innov = obs_val - xb
-                
-                # Increment: Analysis - Background
-                incr = xa - xb
-                
-                # Error: |Analysis - Truth|
-                err = np.abs(xa - xt)
-            
-            # Store frames
-            frames["innovation"].append(innov)
-            frames["increment"].append(incr)
-            frames["ana_truth"].append(err)
-            
-            # Store means
-            ts_data["innovation"].append(np.nanmean(innov))
-            ts_data["increment"].append(np.nanmean(incr))
-            ts_data["ana_truth"].append(np.nanmean(err))
+        frames, ts_data = _collect_experiment(exp_path, ref_path, var, cycles, files)
 
-        # --- GENERATE PLOTS AND GIFS ---
-        
-        disp_cycles = np.array(cycles) + 1 # 1-based indexing for display
-        
-        # 1. Time Series Plot
+        disp_cycles_all  = np.array([0] + [c + 1 for c in cycles])
+        disp_cycles_post = np.array([c + 1 for c in cycles])
+
+        # ── Time Series ──
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(disp_cycles, ts_data["innovation"], label="Innovation (obs-bkg)", marker='.', alpha=0.7)
-        ax.plot(disp_cycles, ts_data["increment"], label="Increment (ana-bkg)", marker='.', alpha=0.7)
-        ax.plot(disp_cycles, ts_data["ana_truth"], label="|Ana - Truth|", marker='.', color='red')
-        
+        ax.plot(disp_cycles_post, ts_data["innovation"], label="Innovation (obs-bkg)", marker='.', alpha=0.7)
+        ax.plot(disp_cycles_post, ts_data["increment"],  label="Increment (ana-bkg)",  marker='.', alpha=0.7)
+        ax.plot(disp_cycles_all,  ts_data["ana_truth"],  label="|Ana - Truth|",        marker='.', color='red')
         ax.set_title(f"{var} - Spatially Averaged Diagnostics")
-        ax.set_xlabel("Cycle")
-        ax.set_ylabel(f"Mean {UNITS.get(var, '')}")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
+        ax.set_xlabel("Cycle"); ax.set_ylabel(f"Mean {UNITS.get(var, '')}")
+        ax.grid(True, alpha=0.3); ax.legend()
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        
-        ts_path = out_dir / f"{var}_spatial_means.png"
-        plt.savefig(ts_path, dpi=150, bbox_inches='tight')
+        plt.savefig(out_dir / f"{var}_spatial_means.png", dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"  Saved Time Series: {ts_path}")
-        
-        # 2. Generate GIFs
-        for mode in ["innovation", "increment", "ana_truth"]:
-            data_stack = np.array(frames[mode])
-            
-            # Determine Color Limits & Normalization
-            if mode == "ana_truth":
-                # Sequential (0 to max)
-                vmax = np.nanmax(data_stack) if np.any(np.isfinite(data_stack)) else 1.0
-                vmin = 0
-                
-                # Use SymLogNorm to show small errors
-                # linthresh determines the range around zero that is linear.
-                # We want it small enough to see details, but not so small we amplify noise.
-                linthresh = vmax * 0.01 if vmax > 0 else 0.1
-                norm = SymLogNorm(linthresh=linthresh, vmin=vmin, vmax=vmax)
-                cmap = "viridis"
-            else:
-                # Diverging (-max to max)
-                abs_max = np.nanmax(np.abs(data_stack)) if np.any(np.isfinite(data_stack)) else 1.0
-                vmin = -abs_max
-                vmax = abs_max
-                
-                # linthresh: values within [-linthresh, linthresh] are linear.
-                linthresh = abs_max * 0.01 if abs_max > 0 else 0.1
-                norm = SymLogNorm(linthresh=linthresh, vmin=vmin, vmax=vmax)
-                cmap = "coolwarm"
-            
-            # SKIP if all data is NaN (common for innovation if obs not saved)
-            if np.all(np.isnan(data_stack)):
-                print(f"  Skipping {mode} GIF for {var} (All NaNs)")
-                continue
+        print(f"  Saved Time Series")
 
-            # Setup Figure
-            fig = plt.figure(figsize=(7, 4))
-            ax = plt.axes(projection=ccrs.PlateCarree())
-            ax.coastlines(linewidth=0.7, color='black')
-            ax.add_feature(cfeature.BORDERS, linewidth=0.3, edgecolor='gray')
-            
-            # Plot first frame
-            im = ax.imshow(data_stack[0], origin='lower', extent=[0, 360, -90, 90],
-                          cmap=cmap, norm=norm, interpolation='nearest',
-                          transform=ccrs.PlateCarree())
-            
-            plt.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
-            title_text = ax.set_title(f"{var} {diff_labels[mode]} - Cycle {cycles[0]}")
-            
-            # Animate
-            def update(frame_idx):
-                im.set_data(data_stack[frame_idx])
-                title_text.set_text(f"{var} {diff_labels[mode]} - Cycle {cycles[frame_idx]}")
-                return [im, title_text]
-            
-            gif_path = out_dir / f"{var}_{mode}.gif"
-            writer = PillowWriter(fps=2)
-            
-            try:
-                with writer.saving(fig, gif_path, dpi=100):
-                    for i in range(len(cycles)):
-                        update(i)
-                        writer.grab_frame()
-                print(f"  Saved GIF: {gif_path}")
-            except Exception as e:
-                print(f"  Error saving GIF {gif_path}: {e}")
-            
-            plt.close()
+        # ── Heatmap GIFs ──
+        for mode in ["innovation", "increment", "ana_truth"]:
+            _make_single_gif(frames[mode], cycles, var, mode, diff_labels[mode], out_dir)
+
+
+def _make_single_gif(frame_list, cycles, var, mode, title_label, out_dir):
+    data_stack = np.array(frame_list)
+    if np.all(np.isnan(data_stack)):
+        print(f"  Skipping {mode} GIF for {var} (All NaNs)"); return
+
+    norm, cmap = _build_norm_cmap(data_stack, mode)
+
+    fig = plt.figure(figsize=(7.2, 4.1))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    fig.subplots_adjust(left=0.03, right=0.90, bottom=0.05, top=0.91)
+    ax.coastlines(linewidth=0.7, color='black')
+    ax.add_feature(cfeature.BORDERS, linewidth=0.3, edgecolor='gray')
+    im = ax.imshow(data_stack[0], origin='lower', extent=[0, 360, -90, 90],
+                   cmap=cmap, norm=norm, interpolation='nearest',
+                   transform=ccrs.PlateCarree())
+    plt.colorbar(im, ax=ax, fraction=0.028, pad=0.015)
+    title_text = ax.set_title(f"{var} {title_label} - Cycle {cycles[0]}", pad=8)
+
+    gif_path = out_dir / f"{var}_{mode}.gif"
+    writer = PillowWriter(fps=2)
+    try:
+        with writer.saving(fig, gif_path, dpi=100):
+            for i in range(len(cycles)):
+                im.set_data(data_stack[i])
+                title_text.set_text(f"{var} {title_label} - Cycle {cycles[i]}")
+                writer.grab_frame()
+        print(f"  Saved GIF: {gif_path}")
+    except Exception as e:
+        print(f"  Error saving GIF {gif_path}: {e}")
+    plt.close()
+
+
+# ─────────────────────────────────────────────────────────────
+#  DUAL-EXPERIMENT MODE
+# ─────────────────────────────────────────────────────────────
+def _run_dual(exp_path_1, exp_path_2, ref_path, out_dir, label_1, label_2):
+    files_1 = _find_cycle_files(exp_path_1)
+    files_2 = _find_cycle_files(exp_path_2)
+    if not files_1 or not files_2:
+        print("Cycle files missing in one or both experiments!"); return
+
+    files_1.sort(key=_extract_cycle_num);  files_2.sort(key=_extract_cycle_num)
+    cycles_1 = [_extract_cycle_num(f) for f in files_1]
+    cycles_2 = [_extract_cycle_num(f) for f in files_2]
+
+    # Use intersection of cycles so frames are aligned
+    common = sorted(set(cycles_1) & set(cycles_2))
+    if not common:
+        print("No common cycles between the two experiments!"); return
+    print(f"Common cycles ({len(common)}): {common}")
+
+    # Filter files/cycles to common set
+    idx_1 = [cycles_1.index(c) for c in common]
+    idx_2 = [cycles_2.index(c) for c in common]
+    files_1 = [files_1[i] for i in idx_1]
+    files_2 = [files_2[i] for i in idx_2]
+    cycles  = common
+
+    diff_labels = {
+        "innovation": "Innovation (Obs - Bkg)",
+        "increment":  "Increment (Ana - Bkg)",
+        "ana_truth":  "Analysis Error |Ana - Truth|",
+    }
+
+    for var in VARS:
+        print(f"\n=== Processing {var} ===")
+        frames_1, ts_1 = _collect_experiment(exp_path_1, ref_path, var, cycles, files_1)
+        frames_2, ts_2 = _collect_experiment(exp_path_2, ref_path, var, cycles, files_2)
+
+        disp_all  = np.array([0] + [c + 1 for c in cycles])
+        disp_post = np.array([c + 1 for c in cycles])
+
+        # ── Stacked Time-Series ──
+        _make_dual_timeseries(ts_1, ts_2, disp_all, disp_post, var, label_1, label_2, out_dir)
+
+        # ── Side-by-side Heatmap GIFs ──
+        for mode in ["innovation", "increment", "ana_truth"]:
+            _make_dual_gif(frames_1[mode], frames_2[mode], cycles, var, mode,
+                           diff_labels[mode], label_1, label_2, out_dir)
+
+
+def _make_dual_timeseries(ts_1, ts_2, disp_all, disp_post, var, label_1, label_2, out_dir):
+    """Two-panel stacked time-series (shared x-axis)."""
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 7), sharex=True,
+                                    gridspec_kw={"hspace": 0.12})
+
+    palette = {"innov": "#3b82f6", "incr": "#22c55e", "err": "#ef4444"}
+
+    for ax, ts, lab in [(ax1, ts_1, label_1), (ax2, ts_2, label_2)]:
+        ax.plot(disp_post, ts["innovation"], label="Innovation", marker='.', alpha=0.8, color=palette["innov"], linewidth=1.4)
+        ax.plot(disp_post, ts["increment"],  label="Increment",  marker='.', alpha=0.8, color=palette["incr"],  linewidth=1.4)
+        ax.plot(disp_all,  ts["ana_truth"],  label="|Ana−Truth|", marker='.', color=palette["err"], linewidth=1.6)
+        ax.set_ylabel(f"Mean {UNITS.get(var, '')}", fontsize=10)
+        ax.set_title(lab, fontsize=11, fontweight="bold", loc="left")
+        ax.grid(True, alpha=0.25)
+        ax.legend(fontsize=8, ncol=3, loc="upper right")
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    ax2.set_xlabel("Cycle", fontsize=10)
+    fig.suptitle(f"{var} — Spatially Averaged Diagnostics", fontsize=13, fontweight="bold", y=0.98)
+
+    plt.savefig(out_dir / f"{var}_spatial_means_dual.png", dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved Dual Time Series")
+
+
+def _make_dual_gif(frames_1, frames_2, cycles, var, mode, title_label,
+                   label_1, label_2, out_dir):
+    """Vertically stacked GIF with a shared colorbar and tight margins."""
+    stack_1 = np.array(frames_1)
+    stack_2 = np.array(frames_2)
+    combined = np.concatenate([stack_1, stack_2], axis=0)
+
+    if np.all(np.isnan(combined)):
+        print(f"  Skipping {mode} dual GIF for {var} (All NaNs)"); return
+
+    norm, cmap = _build_norm_cmap(combined, mode)
+
+    proj = ccrs.PlateCarree()
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(8.4, 7.6), subplot_kw={"projection": proj},
+        gridspec_kw={"hspace": 0.14}
+    )
+    fig.subplots_adjust(left=0.04, right=0.88, bottom=0.04, top=0.92)
+
+    for ax in (ax1, ax2):
+        ax.coastlines(linewidth=0.6, color='black')
+        ax.add_feature(cfeature.BORDERS, linewidth=0.25, edgecolor='gray')
+
+    im1 = ax1.imshow(stack_1[0], origin='lower', extent=[0, 360, -90, 90],
+                     cmap=cmap, norm=norm, interpolation='nearest', transform=proj)
+    im2 = ax2.imshow(stack_2[0], origin='lower', extent=[0, 360, -90, 90],
+                     cmap=cmap, norm=norm, interpolation='nearest', transform=proj)
+
+    t1 = ax1.set_title(f"{label_1}", fontsize=13, fontweight="bold", loc="center", pad=8)
+    t2 = ax2.set_title(f"{label_2}", fontsize=13, fontweight="bold", loc="center", pad=8)
+
+    # Shared colorbar
+    cbar = fig.colorbar(im1, ax=[ax1, ax2], orientation="vertical",
+                        fraction=0.028, pad=0.015)
+    cbar.set_label(UNITS.get(var, ''), fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+
+    unit_str = f" [{UNITS.get(var, '')}]" if var in UNITS else ""
+    suptitle = fig.suptitle(f"{var}  {title_label}{unit_str} — Cycle {cycles[0]}",
+                            fontsize=14, fontweight="bold", y=0.98)
+
+    gif_path = out_dir / f"{var}_{mode}_dual.gif"
+    writer = PillowWriter(fps=2)
+    try:
+        with writer.saving(fig, gif_path, dpi=100):
+            for i in range(len(cycles)):
+                im1.set_data(stack_1[i])
+                im2.set_data(stack_2[i])
+                suptitle.set_text(f"{var}  {title_label}{unit_str} — Cycle {cycles[i]}")
+                writer.grab_frame()
+        print(f"  Saved Dual GIF: {gif_path}")
+    except Exception as e:
+        print(f"  Error saving dual GIF {gif_path}: {e}")
+    plt.close()
+
+
+# ─────────────────────────────────────────────────────────────
+#  Shared utilities
+# ─────────────────────────────────────────────────────────────
+def _build_norm_cmap(data_stack, mode):
+    """Return (norm, cmap) for a given data stack and mode."""
+    if mode == "ana_truth":
+        vmax = np.nanmax(data_stack) if np.any(np.isfinite(data_stack)) else 1.0
+        vmin = 0
+        linthresh = vmax * 0.01 if vmax > 0 else 0.1
+        norm = SymLogNorm(linthresh=linthresh, vmin=vmin, vmax=vmax)
+        cmap = "viridis"
+    else:
+        abs_max = np.nanmax(np.abs(data_stack)) if np.any(np.isfinite(data_stack)) else 1.0
+        vmin, vmax = -abs_max, abs_max
+        linthresh = abs_max * 0.01 if abs_max > 0 else 0.1
+        norm = SymLogNorm(linthresh=linthresh, vmin=vmin, vmax=vmax)
+        cmap = "coolwarm"
+    return norm, cmap
+
+
+# ─────────────────────────────────────────────────────────────
+#  Entry point
+# ─────────────────────────────────────────────────────────────
+def main():
+    exp_path = Path(EXP_DIR).resolve()
+    ref_path = Path(REFERENCE_DIR).resolve()
+    out_dir  = exp_path / OUT_DIR_NAME
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    print(f"Experiment 1 : {exp_path}")
+    print(f"Reference    : {ref_path}")
+    print(f"Output       : {out_dir}")
+
+    if DUAL_MODE:
+        if not EXP_DIR_2:
+            print("ERROR: DUAL_MODE is True but EXP_DIR_2 is empty.")
+            return
+        exp_path_2 = Path(EXP_DIR_2).resolve()
+        print(f"Experiment 2 : {exp_path_2}")
+        _run_dual(exp_path, exp_path_2, ref_path, out_dir, EXP_LABEL_1, EXP_LABEL_2)
+    else:
+        _run_single(exp_path, ref_path, out_dir)
+
 
 if __name__ == "__main__":
     main()

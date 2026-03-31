@@ -50,6 +50,10 @@ dpi = 110
 cmap = "magma"
 out_dir = os.path.join(exp_dir, "innov_inc_gfx")
 os.makedirs(out_dir, exist_ok=True)
+
+# Nonlinear standard-observation settings used by the experiment.
+NONLINEAR_OBS = True
+SCALEFACT = 0.5
 # ---------------------------
 
 def find_cycles(exp_dir, var_name, level):
@@ -194,6 +198,14 @@ def robust_limits(stack):
         vmax = float(np.nanmax(vals)) if np.isfinite(np.nanmax(vals)) else 1.0
     return (-vmax, vmax)
 
+
+def compute_innovation(obs: np.ndarray, xb: np.ndarray, var: str) -> np.ndarray:
+    if var == "WDG1":
+        return (obs - xb + np.pi) % (2 * np.pi) - np.pi
+    if NONLINEAR_OBS and var not in {"WSG1", "WDG1"}:
+        return obs - np.arctan(SCALEFACT * xb)
+    return obs - xb
+
 def main():
     csvs = find_cycles(exp_dir, var_name, level)
     if not csvs:
@@ -217,9 +229,8 @@ def main():
 
         XB, XA, TRUTH, NODA, OBS, SIGMA = load_unified_grids_from_csv(csv, nlat, nlon)
 
-        # === CHANGED DEFINITIONS ===
-        # Innovations: obs - bkg   (NaN where OBS is NaN)
-        INNOV = OBS - XB
+        # Compute innovations in observation space for nonlinear standard obs.
+        INNOV = compute_innovation(OBS, XB, var_name)
 
         # Increments: ana - bkg
         INCR = XA - XB

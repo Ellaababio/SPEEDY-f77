@@ -1587,18 +1587,35 @@ class ReverseSDE(ensemble_DA):
             # (B) TOGGLE: LINEAR vs NONLINEAR OBSERVATION HANDLING
             # ============================================================
             if self.nonlinear_obs:
-                # --- Nonlinear case ---
-                # Observations are already in h-space: y = arctan(sf * Hx) + noise
+                # --- Nonlinear case (aligned with Rev_SDE_prototype.py) ---
+                # Observations y are in h-space: y = arctan(sf * Hx) + noise
+                # Normalize obs into the same normalized-arctan space as xt:
+                #   1. Invert arctan: x_approx = tan(y) / sf
+                #   2. Normalize:     x_norm   = (x_approx - mean_X0) / std_X0
+                #   3. Re-apply h:    y_norm   = arctan(sf * x_norm)
                 sf = float(getattr(self, "scalefact", 1.0))
 
-                # Normalize observations (same as linear: center and scale)
-                y_n = (y - mean_X0) / std_X0
-                sigma_n = sigma / std_X0
+                # Prior conditioning: physical-normalized (same as linear)
+                X0_obs_n_t = X0_obs_n
 
-                # Nonlinear ensemble normalization: apply h(x) = arctan(sf * x_normalized)
-                X0_obs_n_t = _torch.atan(sf * X0_obs_n)
-                y_n_t = y_n
-                sigma_n_t = sigma_n
+                # Transform observations into normalized-arctan space
+                y_physical = _torch.tan(y) / sf                                # invert h
+                y_normalized = (y_physical - mean_X0) / std_X0                 # normalize
+                y_n_t = _torch.atan(sf * y_normalized)                         # re-apply h
+
+                # Safety valve: inflate sigma near arctan boundary (|y_norm| ≈ π/2)
+                # to effectively disable those observations (prototype line 77)
+                sigma_n_t = _torch.where(
+                    _torch.abs(y_n_t) < 1.55,
+                    sigma,              # keep original sigma
+                    sigma * 1e6         # inflate to disable
+                )
+                n_disabled = int((_torch.abs(y_n_t) >= 1.55).sum().item())
+                n_total = y_n_t.numel()
+                if n_disabled > 0:
+                    print(f"[ReverseSDE][nonlinear_obs] safety valve disabled {n_disabled}/{n_total} obs ({100*n_disabled/n_total:.1f}%)")
+                # sigma_n for diagnostics
+                sigma_n = sigma / std_X0
 
 
             else:
@@ -1881,10 +1898,10 @@ class ReverseSDE(ensemble_DA):
                 # Likelihood score
                 if self.nonlinear_obs:
                     sf = float(self.scalefact)
-                    h_xt = _torch.atan(sf * xt)
-                    like_score = -(h_xt - y_n_t) / (sigma_n_t ** 2) * (
-                        sf / (1.0 + (sf * xt) ** 2)
-                    )
+                    # Prototype-style: arctan(sf * xt_norm) vs y_norm, Jacobian = sf/(1+(sf*xt_n)^2)
+                    h_xt = _torch.atan(sf * xt)                                   # h(xt_norm)
+                    jacobian = sf / (1.0 + (sf * xt) ** 2)                         # dh/d(xt_norm)
+                    like_score = -(h_xt - y_n_t) / (sigma_n_t ** 2) * jacobian
                 else:
                     like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
 
@@ -1896,8 +1913,9 @@ class ReverseSDE(ensemble_DA):
 
                 # --- (E) ADD NONLINEAR WIND SCORES ---
                 if is_wind_update and partner_state is not None:
-                     # 1. De-normalize current state
-                     x_phy = mean_X0 + xt * std_X0 
+                     # 1. De-normalize current state to physical space
+                     x_phy = mean_X0 + xt * std_X0
+                     dx_phys_dxt = std_X0
                      
                      # 2. Identify U and V components
                      if wind_mode == "updating_u":
@@ -1927,8 +1945,8 @@ class ReverseSDE(ensemble_DA):
                          else:
                              grad_h_xphy = -u_vec / res_sq
                              
-                         # Chain rule
-                         grad_h_xt = grad_h_xphy * std_X0
+                         # Chain rule: dh_wind/dxt = dh_wind/dx_phys * dx_phys/dxt
+                         grad_h_xt = grad_h_xphy * dx_phys_dxt
                          
                          # Score
                          wind_score = -(diff / (obs_wdg_sigma**2)) * grad_h_xt
@@ -1951,7 +1969,8 @@ class ReverseSDE(ensemble_DA):
                          else:
                              grad_wsg_xphy = v_vec / speed_safe
                              
-                         grad_wsg_xt = grad_wsg_xphy * std_X0
+                         # Chain rule: dh_wsg/dxt = dh_wsg/dx_phys * dx_phys/dxt
+                         grad_wsg_xt = grad_wsg_xphy * dx_phys_dxt
                          
                          wsg_score = -(diff_wsg / (obs_wsg_sigma**2)) * grad_wsg_xt
                          wsg_score = _torch.where(obs_wsg_mask, wsg_score, _torch.zeros_like(wsg_score))

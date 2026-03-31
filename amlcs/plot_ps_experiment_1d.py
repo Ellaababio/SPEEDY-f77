@@ -16,6 +16,26 @@ matplotlib.rcParams.update({"font.size": 14})
 # EnSF Experiment directory (Assimilating Surface Pressure ONLY)
 ENSF_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_ps_only/data_ps0001_old"
 
+# Optional comparison experiments for Figure 0 (up to 2 total)
+FIG0_EXPERIMENTS = [
+    {
+        "label": "EnSF (PS Obs Only)",
+        "path": ENSF_DIR,
+        "file_template": "reverseSDE_cycle{cycle}.nc",
+        "analysis_prefix": "xa_mean",
+        "background_prefix": "xb_mean",
+        "style": "b-",
+    },
+    {
+        "label": "LETKF",
+        "path": "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100",
+        "file_template": "unified_cycle{cycle}.nc",
+        "analysis_prefix": "xa_mean",
+        "background_prefix": "xb_mean",
+        "style": "g-",
+    },
+]
+
 # Reference Directory (Truth + NoDA Free Run)
 REF_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 
@@ -51,6 +71,19 @@ def _read_nc_field(nc_path: Path, var: str, lev: int, prefix: str = None) -> np.
 
     return None
 
+
+def _compute_ps_rmse(truth_file: Path, exp_file: Path, cycle: int, analysis_prefix: str, background_prefix: str) -> float | None:
+    t_ps_log = _read_nc_field(truth_file, "PSG1", 0)
+    e_prefix = background_prefix if cycle == 0 else analysis_prefix
+    e_ps_log = _read_nc_field(exp_file, "PSG1", 0, prefix=e_prefix)
+
+    if t_ps_log is None or e_ps_log is None:
+        return None
+
+    t_ps = P0_HPA * np.exp(t_ps_log)
+    e_ps = P0_HPA * np.exp(e_ps_log)
+    return np.sqrt(np.mean((e_ps - t_ps)**2))
+
 def main():
     ensf_path = Path(ENSF_DIR)
     ref_path = Path(REF_DIR)
@@ -67,12 +100,21 @@ def main():
     }
     
     valid_cycles = []
+    fig0_res = {
+        exp["label"]: []
+        for exp in FIG0_EXPERIMENTS[:2]
+    }
     
     for c in CYCLES:
         truth_file = ref_path / "snapshots" / f"reference_solution_{c}.nc"
         noda_file = ref_path / "free_run" / f"free_run_{c}.nc"
         ensf_file = ensf_path / f"reverseSDE_cycle{c}.nc"
-        
+
+        exp_files = {
+            exp["label"]: Path(exp["path"]) / exp["file_template"].format(cycle=c)
+            for exp in FIG0_EXPERIMENTS[:2]
+        }
+
         if not (truth_file.exists() and noda_file.exists() and ensf_file.exists()):
             continue
             
@@ -116,19 +158,42 @@ def main():
         else:
             for k in res["UG1"]: res["UG1"][k].append(np.nan)
 
+        for exp in FIG0_EXPERIMENTS[:2]:
+            exp_file = exp_files[exp["label"]]
+            rmse = None
+            if truth_file.exists() and exp_file.exists():
+                rmse = _compute_ps_rmse(
+                    truth_file,
+                    exp_file,
+                    c,
+                    exp["analysis_prefix"],
+                    exp["background_prefix"],
+                )
+            fig0_res[exp["label"]].append(np.nan if rmse is None else rmse)
+
     cycles = np.array(valid_cycles)
+    cycle_ticks = np.arange(0, cycles[-1] + 1, 5) if len(cycles) else np.array([])
     
     # ---------------------------------------------------------
     # PLOT 0: RMSE Line plot for Surface Pressure
     # ---------------------------------------------------------
     plt.figure(figsize=(7, 5))
     plt.plot(cycles, res["PSG1"]["noda_rmse"], 'k--', linewidth=2, label="NoDA")
-    plt.plot(cycles, res["PSG1"]["ensf_rmse"], 'b-', linewidth=2, label="EnSF (PS Obs Only)")
+    for exp in FIG0_EXPERIMENTS[:2]:
+        plt.plot(
+            cycles,
+            fig0_res[exp["label"]],
+            exp["style"],
+            linewidth=2,
+            label=exp["label"],
+        )
     plt.title("Surface Pressure RMSE Evolution", fontweight="bold")
     plt.xlabel("Assimilation Cycle")
     plt.ylabel("RMSE (hPa)")
     plt.legend()
     plt.grid(True, linestyle=":", alpha=0.6)
+    if len(cycle_ticks):
+        plt.xticks(cycle_ticks)
     plt.tight_layout()
     plot_file = out_path / "Fig0_RMSE_PSG1.png"
     plt.savefig(plot_file, dpi=300)
@@ -164,6 +229,8 @@ def main():
         
         for ax in axs.flat:
             ax.grid(True, linestyle=':', alpha=0.6)
+            if len(cycle_ticks):
+                ax.set_xticks(cycle_ticks)
             
         plt.tight_layout(rect=[0, 0.03, 1, 0.93])
         return fig
