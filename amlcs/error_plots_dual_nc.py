@@ -17,8 +17,8 @@ Generates two families of plots for each variable:
 
 # FULL PATHS to the two experiment directories you want to compare:
 
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/v_arctan_0.1_sf_0.5/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/v_arctan_0.1_sf_0.5/data"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/5x_obs_err/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/all_arctan/5x_obs_err/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
@@ -37,14 +37,14 @@ VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
 ANCHOR = "step1"
 
 # Scale mode: "log", "linear", or "both"
-SCALE_MODE = "linear"
+SCALE_MODE = "both"
 
 # Generate log plots? (Set False for absolute-only plots)
 GENERATE_LOG_PLOTS = True
 
 # Explicit Output Directory (optional)
 # If set, plots will be saved here directly.
-OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/v_arctan_0.1_sf_0.5/LETKF_vs_reverseSDE"
+OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/5x_obs_err/LETKF_vs_reverseSDE"
 
 # Output directory name (ignored if OUTPUT_DIR is set)
 PLOT_DIR_NAME = None  
@@ -384,22 +384,13 @@ def _five_curves(ana1, bkg1, ana2, bkg2, noda, anchor_mode, scale, m1, m2):
 
     xs = np.arange(len(noda))
 
-    if scale == "log":
-        curves = {
-            "NoDA": np.log(noda + eps),
-            f"{m1} Analysis": np.log(ana1 + eps),
-            f"{m1} Background": np.log(bkg1 + eps),
-            f"{m2} Analysis": np.log(ana2 + eps),
-            f"{m2} Background": np.log(bkg2 + eps),
-        }
-    else:
-        curves = {
-            "NoDA": noda,
-            f"{m1} Analysis": ana1,
-            f"{m1} Background": bkg1,
-            f"{m2} Analysis": ana2,
-            f"{m2} Background": bkg2,
-        }
+    curves = {
+        "NoDA": noda,
+        f"{m1} Analysis": ana1,
+        f"{m1} Background": bkg1,
+        f"{m2} Analysis": ana2,
+        f"{m2} Background": bkg2,
+    }
 
     return xs, curves
 
@@ -450,7 +441,11 @@ def _plot_curves(xs, curves, title, out_path, scale, method1_info, method2_info)
     
     plt.title(title_with_colors, fontsize=12)
     plt.xlabel("Assimilation Step")
-    plt.ylabel("log(RMSE)" if scale == "log" else "RMSE")
+    if scale == "log":
+        plt.yscale("log")
+        plt.ylabel("RMSE (Log Scale)")
+    else:
+        plt.ylabel("RMSE")
     
     # Remove duplicate legend entries
     handles, labels = plt.gca().get_legend_handles_labels()

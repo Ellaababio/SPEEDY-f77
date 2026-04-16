@@ -25,8 +25,8 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directories
-EXP_DIR   = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/v_arctan_0.1_sf_0.5/data"
-EXP_DIR_2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/v_arctan_0.1_sf_0.5/data"  # Second experiment (only used when DUAL_MODE = True)
+EXP_DIR   = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/5x_obs_err/data"
+EXP_DIR_2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/all_arctan/5x_obs_err/data"  # Second experiment (only used when DUAL_MODE = True)
 
 # Human-readable labels
 EXP_LABEL_1 = "ReverseSDE"
@@ -39,10 +39,10 @@ DUAL_MODE = True
 REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
 
 # Output Directory (relative to EXP_DIR by default)
-OUT_DIR_NAME = "../heatmaps_nc"
+OUT_DIR_NAME = "../heatmaps_nc_dual"
 
 # Variables to process
-VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1", "WSG1", "WDG1"]
+VARS = ["UG1", "VG1", "TG1", "TRG1", "PSG1"]
 
 # Level index to plot (for 3D vars) - PSG1 is 2D so this is ignored for it
 LEVEL_IDX = 7  # Surface level for T21 (0 is top, 7 is bottom)
@@ -72,7 +72,17 @@ def _standard_obs_innovation(obs_val: np.ndarray, xb: np.ndarray, var: str) -> n
     if var == "WDG1":
         return _circ_diff(obs_val, xb)
     if NONLINEAR_OBS and var not in {"WSG1", "WDG1"}:
-        return obs_val - np.arctan(SCALEFACT * xb)
+        # The true assimilation operators use Z-score normalized grids BEFORE taking the arctan.
+        # Since the heatmap script doesn't have the explicit mu/std vectors dumped in the NC files,
+        # we will approximate it using the block's current spatial statistics so the arctan doesn't saturate to pi/2.
+        xb_valid = xb[np.isfinite(xb)]
+        if len(xb_valid) > 0:
+            mu = np.mean(xb_valid)
+            std = np.std(xb_valid) + 1e-6
+            xb_norm = (xb - mu) / std
+        else:
+            xb_norm = xb
+        return obs_val - np.arctan(SCALEFACT * xb_norm)
     return obs_val - xb
 
 def _find_cycle_files(exp_path: Path):
@@ -160,7 +170,16 @@ def _collect_experiment(exp_path, ref_path, var, cycles, files):
         else:
             anchor_val = np.nanmean(np.abs(fr - tr))
 
-    ts_data = {"innovation": [], "increment": [], "ana_truth": [anchor_val]}
+    innov_anchor = np.nan
+    incr_anchor = 0.0
+    if free_run_0.exists() and len(files) > 0:
+        c1_obs = _read_nc_field(files[0], var, LEVEL_IDX, prefix="obs")
+        fr = _read_nc_field(free_run_0, var, LEVEL_IDX, prefix=None)
+        if not np.all(np.isnan(c1_obs)) and not np.all(np.isnan(fr)):
+            innov_0 = _standard_obs_innovation(c1_obs, fr, var)
+            innov_anchor = np.nanmean(innov_0)
+
+    ts_data = {"innovation": [innov_anchor], "increment": [incr_anchor], "ana_truth": [anchor_val]}
     frames  = {"innovation": [], "increment": [], "ana_truth": []}
 
     for i, cycle_k in enumerate(cycles):
@@ -218,9 +237,10 @@ def _run_single(exp_path, ref_path, out_dir):
 
         # ── Time Series ──
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(disp_cycles_post, ts_data["innovation"], label="Innovation (obs-bkg)", marker='.', alpha=0.7)
-        ax.plot(disp_cycles_post, ts_data["increment"],  label="Increment (ana-bkg)",  marker='.', alpha=0.7)
-        ax.plot(disp_cycles_all,  ts_data["ana_truth"],  label="|Ana - Truth|",        marker='.', color='red')
+        # Optional: uncomment the line below to show estimated innovation. 
+        # ax.plot(disp_cycles_all, ts_data["innovation"], label="Innovation (obs-bkg)", marker='.', linestyle=':', alpha=0.7)
+        ax.plot(disp_cycles_all, ts_data["increment"],  label="Increment (ana-bkg)",  marker='.', linestyle='--', alpha=0.7)
+        ax.plot(disp_cycles_all,  ts_data["ana_truth"],  label="|Ana - Truth|",        marker='.', linestyle='-', color='red')
         ax.set_title(f"{var} - Spatially Averaged Diagnostics")
         ax.set_xlabel("Cycle"); ax.set_ylabel(f"Mean {UNITS.get(var, '')}")
         ax.grid(True, alpha=0.3); ax.legend()
@@ -230,7 +250,8 @@ def _run_single(exp_path, ref_path, out_dir):
         print(f"  Saved Time Series")
 
         # ── Heatmap GIFs ──
-        for mode in ["innovation", "increment", "ana_truth"]:
+        # 'innovation' is omitted because its mathematical approximation is misleading without explicit Normalizers
+        for mode in ["increment", "ana_truth"]:
             _make_single_gif(frames[mode], cycles, var, mode, diff_labels[mode], out_dir)
 
 
@@ -310,7 +331,8 @@ def _run_dual(exp_path_1, exp_path_2, ref_path, out_dir, label_1, label_2):
         _make_dual_timeseries(ts_1, ts_2, disp_all, disp_post, var, label_1, label_2, out_dir)
 
         # ── Side-by-side Heatmap GIFs ──
-        for mode in ["innovation", "increment", "ana_truth"]:
+        # 'innovation' is omitted because its mathematical approximation is misleading without explicit Normalizers
+        for mode in ["increment", "ana_truth"]:
             _make_dual_gif(frames_1[mode], frames_2[mode], cycles, var, mode,
                            diff_labels[mode], label_1, label_2, out_dir)
 
@@ -323,9 +345,10 @@ def _make_dual_timeseries(ts_1, ts_2, disp_all, disp_post, var, label_1, label_2
     palette = {"innov": "#3b82f6", "incr": "#22c55e", "err": "#ef4444"}
 
     for ax, ts, lab in [(ax1, ts_1, label_1), (ax2, ts_2, label_2)]:
-        ax.plot(disp_post, ts["innovation"], label="Innovation", marker='.', alpha=0.8, color=palette["innov"], linewidth=1.4)
-        ax.plot(disp_post, ts["increment"],  label="Increment",  marker='.', alpha=0.8, color=palette["incr"],  linewidth=1.4)
-        ax.plot(disp_all,  ts["ana_truth"],  label="|Ana−Truth|", marker='.', color=palette["err"], linewidth=1.6)
+        # Optional: uncomment the line below to show estimated innovation
+        # ax.plot(disp_all, ts["innovation"], label="Innovation", marker='.', linestyle=':', alpha=0.8, color=palette["innov"], linewidth=1.4)
+        ax.plot(disp_all, ts["increment"],  label="Increment",  marker='.', linestyle='--', alpha=0.8, color=palette["incr"],  linewidth=1.4)
+        ax.plot(disp_all,  ts["ana_truth"],  label="|Ana−Truth|", marker='.', linestyle='-', color=palette["err"], linewidth=1.6)
         ax.set_ylabel(f"Mean {UNITS.get(var, '')}", fontsize=10)
         ax.set_title(lab, fontsize=11, fontweight="bold", loc="left")
         ax.grid(True, alpha=0.25)

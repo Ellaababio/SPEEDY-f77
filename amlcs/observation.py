@@ -201,6 +201,37 @@ class observation:
                    except Exception:
                        wind_errors[w_name] = 1.0
           
+          # --- Precompute spatial statistics from t=0 for Z-score normalization ---
+          if self.nonlinear_obs:
+              xs_init = rs.x_ref[0]
+              for block_idx, (ma, R_data, H_sparse) in enumerate(zip(mask_cor, self.obs_R_sparse, self.obs_H_sparse)):
+                  mu_field = []
+                  std_field = []
+                  for m in ma:
+                      var_info = m[0]
+                      variable = var_info[0]
+                      level = var_info[1]
+                      var_name = var_names[variable]
+                      if 'TRG' in var_name:
+                         x_ma = xs_init[variable][level,:,:]
+                      elif 'PSG' in var_name:
+                         x_ma = xs_init[variable][:,:]
+                      else:
+                         x_ma = xs_init[variable][level,:,:]
+                      
+                      v_mu = float(np.mean(x_ma))
+                      v_std = float(np.std(x_ma)) + 1e-6
+                      N_pts = x_ma.size
+                      mu_field.extend([v_mu] * N_pts)
+                      std_field.extend([v_std] * N_pts)
+                  
+                  # Map the spatial statistics through the observation operator H
+                  mu_field_arr = np.array(mu_field).reshape((-1, 1))
+                  std_field_arr = np.array(std_field).reshape((-1, 1))
+                  R_data['mu_vec'] = (H_sparse @ mu_field_arr).flatten()
+                  R_data['std_vec'] = (H_sparse @ std_field_arr).flatten()
+          # ------------------------------------------------------------------------
+          
           for s in range(0, M):
               xs = rs.x_ref[s]; 
               y_ma = [];
@@ -230,8 +261,11 @@ class observation:
                   
                   # Apply nonlinear operator if requested (Standard Vars)
                   if self.nonlinear_obs:
-                      # Nonlinear observation operator: h(x) = arctan(sf * x)
-                      Hx = np.arctan(self.scalefact * Hx)
+                      mu_vec = R_data['mu_vec'].reshape((-1, 1))
+                      std_vec = R_data['std_vec'].reshape((-1, 1))
+                      Hx_norm = (Hx - mu_vec) / std_vec
+                      # Nonlinear observation operator: h(x) = arctan(sf * x_norm)
+                      Hx = np.arctan(self.scalefact * Hx_norm)
                   
                   # Add noise
                   y = Hx + R_sqrt @ np.random.randn(m_obs,1);

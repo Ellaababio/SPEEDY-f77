@@ -1,2 +1,2 @@
 exp_path,resolution,M,variable,level,plot_dir_name,output_dir
-t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_direction_only/data,t21,20,,,,/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_EnKF_MC_obs_1_1_100/wind_direction_only/enkf_only
+t21_50_0.05_20_ReverseSDE_1_1_100,t21,20,,,,/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/new

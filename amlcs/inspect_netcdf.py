@@ -18,8 +18,8 @@ from netCDF4 import Dataset
 ###############################################################################
 
 # List of files or directories to inspect
-PATHS_TO_INSPECT = ["/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/unified_cycle0.nc",
-"/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/unified_cycle0.nc"]
+PATHS_TO_INSPECT = ["/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/final/data/unified_cycle1.nc",
+"/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/all_arctan/custom_error_data/unified_cycle1.nc"]
     # Add more paths here (can be directory or specific file)
 
 
@@ -96,12 +96,12 @@ def inspect_file(filepath, verbose=False, label=""):
                     key = (var_name, lev_tag)
                     if key not in vars_found: vars_found[key] = {}
                     vars_found[key][prefix] = vname
-                elif parts[0] == 'truth':
+                elif parts[0] in ['truth', 'obs']:
                     var_name = parts[1]
                     lev_tag = parts[2]
                     key = (var_name, lev_tag)
                     if key not in vars_found: vars_found[key] = {}
-                    vars_found[key]['truth'] = vname
+                    vars_found[key][parts[0]] = vname
 
             if not vars_found:
                 # Fallback: check for raw state variables (e.g. UG0, UG1...) in Free Run files
@@ -180,15 +180,17 @@ def inspect_file(filepath, verbose=False, label=""):
                 print("   No standard DA variables found (xb_mean_*, xa_mean_*).")
                 return
 
-            print(f"   {'Variable':<10} {'Level':<6} | {'Incr(RMS)':<10} {'Incr(Max)':<10} | {'Err(RMS)':<10} | {'Status':<10}")
-            print("   " + "-"*75)
+            print(f"   {'Variable':<10} {'Level':<6} | {'Mean(XB)':<10} {'Mean(XA)':<10} | {'Incr(RMS)':<10} {'Innov(RMS)':<11} | {'Err(RMS)':<10} | {'Status':<10}")
+            print("   " + "-"*96)
 
             sorted_keys = sorted(vars_found.keys(), key=lambda x: (x[1], x[0]))
             for var, lev in sorted_keys:
                 vinfo = vars_found[(var, lev)]
-                xb_name, xa_name, tr_name = vinfo.get('xb'), vinfo.get('xa'), vinfo.get('truth')
+                xb_name, xa_name, tr_name, obs_name = vinfo.get('xb'), vinfo.get('xa'), vinfo.get('truth'), vinfo.get('obs')
                 
-                status, incr_rms, incr_max, err_rms = "SKIP", "N/A", "N/A", "N/A"
+                status, incr_rms, innov_rms, err_rms = "SKIP", "N/A", "N/A", "N/A"
+                mean_xb, mean_xa = "N/A", "N/A"
+                
                 if xb_name and xa_name:
                     try:
                         xb = nc.variables[xb_name][:]
@@ -198,10 +200,20 @@ def inspect_file(filepath, verbose=False, label=""):
                         if not s_xb['valid'] or not s_xa['valid']:
                             status = "NaN/Inf!"
                         else:
+                            mean_xb = f"{s_xb['mean']:.2e}"
+                            mean_xa = f"{s_xa['mean']:.2e}"
+                            
                             incr = xa - xb
                             s_incr = get_stats(incr)
-                            incr_rms, incr_max = f"{s_incr['rms']:.2e}", f"{s_incr['abs_max']:.2e}"
+                            incr_rms = f"{s_incr['rms']:.2e}"
                             status = "No Update" if s_incr['abs_max'] == 0.0 else "OK"
+                            
+                            if obs_name in nc.variables:
+                                obs = nc.variables[obs_name][:]
+                                mask = np.isfinite(obs)
+                                if np.any(mask):
+                                    innov = obs[mask] - xb[mask]
+                                    innov_rms = f"{np.sqrt(np.mean(innov**2)):.2e}"
                             
                             if tr_name:
                                 tr = nc.variables[tr_name][:]
@@ -209,7 +221,7 @@ def inspect_file(filepath, verbose=False, label=""):
                                 err_rms = f"{s_err['rms']:.2e}" if s_err['valid'] else "NaN(Tr)"
                     except Exception:
                         status = "Error"
-                print(f"   {var:<10} {lev:<6} | {incr_rms:<10} {incr_max:<10} | {err_rms:<10} | {status:<10}")
+                print(f"   {var:<10} {lev:<6} | {mean_xb:<10} {mean_xa:<10} | {incr_rms:<10} {innov_rms:<11} | {err_rms:<10} | {status:<10}")
     except Exception as e:
         print(f"   Failed to open/read: {e}")
 

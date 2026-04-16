@@ -615,7 +615,9 @@ class LETKF(ensemble_DA):
             lbo_block = XB_info['lbo_b'];
             Ri_block  = R_info['Ri'];
             R_block   = R_info['R']
-            XA_block = self.perform_assimilation_block(XB_block, xb_block, DX_block, H_block, Ri_block, y_block, lbo_block, lobs_block, block_idx=block_idx);
+            mu_vec    = R_info.get('mu_vec')
+            std_vec   = R_info.get('std_vec')
+            XA_block = self.perform_assimilation_block(XB_block, xb_block, DX_block, H_block, Ri_block, y_block, lbo_block, lobs_block, block_idx=block_idx, mu_vec=mu_vec, std_vec=std_vec);
             self.XA_map.append(XA_block);
             
             # write unified Netcdf files for this block/cycle
@@ -655,7 +657,7 @@ class LETKF(ensemble_DA):
         
         
     
-    def perform_assimilation_block(self, XB, xb, DX, H, Ri, y, lbo_info, lobs, block_idx=None):
+    def perform_assimilation_block(self, XB, xb, DX, H, Ri, y, lbo_info, lobs, block_idx=None, mu_vec=None, std_vec=None):
 
           
           n, Nens = XB.shape;
@@ -663,6 +665,8 @@ class LETKF(ensemble_DA):
           lbo, nlbo = lbo_info; #local boxes information (indexes, number of components in all boxes)
 
           y_model = H.T @ y;
+          mu_model = H.T @ mu_vec if mu_vec is not None else None
+          std_model = H.T @ std_vec if std_vec is not None else None
           
           
           Ri_space = H.T @ (Ri @ H);
@@ -725,6 +729,12 @@ class LETKF(ensemble_DA):
                      sf = self.scalefact
                      # Apply nonlinear forward operator h(x) = arctan(sf * Hx) on ensemble
                      Hb_i_ens = H_i_lin @ XB_i  # (m_i, Nens)
+                     
+                     if mu_model is not None and std_model is not None:
+                         mu_i = mu_model[lbo_i[H_ind]].reshape((m_i, 1))
+                         std_i = std_model[lbo_i[H_ind]].reshape((m_i, 1))
+                         Hb_i_ens = (Hb_i_ens - mu_i) / std_i
+                         
                      Hb_i_ens_nl = np.arctan(sf * Hb_i_ens)
                      Hb_i_ens_nl_mean = np.mean(Hb_i_ens_nl, axis=1, keepdims=True)
 
@@ -992,7 +1002,7 @@ class LEnKF(ensemble_DA):
 class ReverseSDE(ensemble_DA):
 
     def __init__(self, nm, infla, Nens,
-                 pseudo_time_steps: int = 200,
+                 pseudo_time_steps: int = 1000,
                  eps_alpha: float = 0.05, # keep between 0 and 1
                  scalefact: float = 1.0,
                  eps_beta: float = 0.025, # keep between 0 and 0.5
@@ -1134,6 +1144,8 @@ class ReverseSDE(ensemble_DA):
                 "idx_observed": idx_observed,
                 "y": y_block.astype(float),
                 "sigma": sigma.astype(float),
+                "mu_vec": R_info.get("mu_vec"),
+                "std_vec": R_info.get("std_vec"),
             })
         # --- inside prepare_analysis(), right before that debug print ---
         # ensure idx_observed is an ndarray for all blocks
@@ -1569,51 +1581,45 @@ class ReverseSDE(ensemble_DA):
             X0_obs = _torch.from_numpy(X0_obs_np.astype(_np.float32)).to(device)
             y = _torch.from_numpy(y_np.astype(_np.float32)).to(device)
             sigma = _torch.from_numpy(sigma_np.astype(_np.float32)).to(device)
+            
+            mu_vec_np = OM.get("mu_vec")
+            std_vec_np = OM.get("std_vec")
+            if mu_vec_np is not None:
+                mu_vec_t = _torch.from_numpy(mu_vec_np.astype(_np.float32)).to(device)
+                std_vec_t = _torch.from_numpy(std_vec_np.astype(_np.float32)).to(device)
+            else:
+                mu_vec_t = _torch.tensor(0.0, device=device)
+                std_vec_t = _torch.tensor(1.0, device=device)
 
             # --- NORMALIZE FLAG LOGIC ---
             if self.normalize:
-                # Compute stats on device
+                # Always compute true ensemble stats on device to preserve flow-dependent covariance scaling
                 mean_X0 = _torch.mean(X0_obs, dim=0) # (m,)
                 std_X0 = _torch.std(X0_obs, dim=0) # (m,)
-                std_X0 = _torch.clamp(std_X0, min=1e-5) # avoid div/0
+                # Prevent div by zero
+                std_X0 = _torch.clamp(std_X0, min=1e-5)
+                
+                X0_obs_n = (X0_obs - mean_X0) / std_X0
             else:
                 # No normalization: mean=0, std=1
                 mean_X0 = _torch.zeros(m, device=device, dtype=_torch.float32)
                 std_X0 = _torch.ones(m, device=device, dtype=_torch.float32)
-            
             X0_obs_n = (X0_obs - mean_X0) / std_X0 # (Nens, m)
 
             # ============================================================
             # (B) TOGGLE: LINEAR vs NONLINEAR OBSERVATION HANDLING
             # ============================================================
             if self.nonlinear_obs:
-                # --- Nonlinear case (aligned with Rev_SDE_prototype.py) ---
-                # Observations y are in h-space: y = arctan(sf * Hx) + noise
-                # Normalize obs into the same normalized-arctan space as xt:
-                #   1. Invert arctan: x_approx = tan(y) / sf
-                #   2. Normalize:     x_norm   = (x_approx - mean_X0) / std_X0
-                #   3. Re-apply h:    y_norm   = arctan(sf * x_norm)
+                # --- Nonlinear case: Climatological Z-Score ---
                 sf = float(getattr(self, "scalefact", 1.0))
 
                 # Prior conditioning: physical-normalized (same as linear)
                 X0_obs_n_t = X0_obs_n
 
-                # Transform observations into normalized-arctan space
-                y_physical = _torch.tan(y) / sf                                # invert h
-                y_normalized = (y_physical - mean_X0) / std_X0                 # normalize
-                y_n_t = _torch.atan(sf * y_normalized)                         # re-apply h
-
-                # Safety valve: inflate sigma near arctan boundary (|y_norm| ≈ π/2)
-                # to effectively disable those observations (prototype line 77)
-                sigma_n_t = _torch.where(
-                    _torch.abs(y_n_t) < 1.55,
-                    sigma,              # keep original sigma
-                    sigma * 1e6         # inflate to disable
-                )
-                n_disabled = int((_torch.abs(y_n_t) >= 1.55).sum().item())
-                n_total = y_n_t.numel()
-                if n_disabled > 0:
-                    print(f"[ReverseSDE][nonlinear_obs] safety valve disabled {n_disabled}/{n_total} obs ({100*n_disabled/n_total:.1f}%)")
+                # y remains in arctan space. No unstable tan(y) required!
+                y_n_t = y
+                sigma_n_t = sigma
+                
                 # sigma_n for diagnostics
                 sigma_n = sigma / std_X0
 
@@ -1893,15 +1899,27 @@ class ReverseSDE(ensemble_DA):
                     xt_norm_gridpoint[cycle_k, block_idx, i-1, :, :] = values_norm_gridpoint
 
                 # ====== SDE UPDATE ======
-                prior_term = (xt - alpha_t * X0_obs_n_t) / sigma2_t
+                # Log-probability gradient of the Gaussian prior: \nabla \log N(x; \mu, \beta) = - (x - \mu) / \beta
+                prior_term = -(xt - alpha_t * X0_obs_n_t) / sigma2_t
                 
                 # Likelihood score
                 if self.nonlinear_obs:
                     sf = float(self.scalefact)
-                    # Prototype-style: arctan(sf * xt_norm) vs y_norm, Jacobian = sf/(1+(sf*xt_n)^2)
-                    h_xt = _torch.atan(sf * xt)                                   # h(xt_norm)
-                    jacobian = sf / (1.0 + (sf * xt) ** 2)                         # dh/d(xt_norm)
-                    like_score = -(h_xt - y_n_t) / (sigma_n_t ** 2) * jacobian
+                    # 1. Expand `xt` to physical space using ensemble statistics
+                    X_phys = xt * std_X0 + mean_X0
+                    
+                    # 2. Compress to the observation's localized-climatology Z-space
+                    X_c_norm = (X_phys - mu_vec_t) / std_vec_t
+                    
+                    # 3. Evaluate Observation Forward Operator
+                    h_xt = _torch.atan(sf * X_c_norm)
+                    
+                    # 4. Exact Chain Rule Jacobian: d(h_xt)/d(xt)
+                    # Note: std_X0 and std_vec_t are (m,) vectors.
+                    jacobian = (sf / (1.0 + (sf * X_c_norm) ** 2)) * (std_X0 / std_vec_t)
+                    
+                    # 5. Likelihood Score
+                    like_score = -(h_xt - y) / (sigma ** 2) * jacobian
                 else:
                     like_score = -(xt - y_n_t) / (sigma_n_t ** 2)
 
@@ -2058,25 +2076,22 @@ class ReverseSDE(ensemble_DA):
                             print(f"[ReverseSDE][{label}] step={i:03d} diagnostics non-finite")
 
                 # --- Drift Calculation (with optional clipping) ---
-                like_tau_eff = like_tau
-                if False and self.score_clip is not None:
-                     # Clip posterior score: -prior + like
-                     post = -prior_term + like_tau
-                     post_clipped = _torch.clamp(post, -self.score_clip, self.score_clip)
-                     like_tau_eff = post_clipped + prior_term
-
-                if self.drift_type == "corrected":
-                    # Vanilla-style: f*xt + g^2*prior - g^2*like
-                    drift = f * xt + (g ** 2) * prior_term - (g ** 2) * like_tau_eff
-                else:
-                    # Prototype-style: -(f*xt + g^2*prior - like)
-                    drift = -( f * xt + (g ** 2) * prior_term - like_tau_eff )
+                # The total analytical score matches the log-probability gradient
+                score = prior_term + like_tau
+                
+                if self.score_clip is not None:
+                     # dynamically clamp the raw score to avoid Forward Euler integration jumps
+                     max_score = 100.0 
+                     score = _torch.clamp(score, -max_score, max_score)
+                     
+                # Mathematically Exact Continuous-Time Reverse SDE: dx = [-f*x + g^2 * score] dt + g dW
+                drift = -f * xt + (g ** 2) * score
 
                 noise = _torch.sqrt(_torch.tensor(dt, device=device, dtype=xt.dtype)) * g * _torch.randn_like(xt)
                 xt_next = xt + dt * drift + noise
 
                 # --- 4. SAFETY CLAMP ---
-                if False and self.state_clip is not None:
+                if self.state_clip is not None:
                     # Check if anything is out of bounds before clamping (for warning)
                     with _torch.no_grad():
                         outliers = _torch.abs(xt_next) > self.state_clip
