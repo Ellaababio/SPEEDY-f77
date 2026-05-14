@@ -34,11 +34,13 @@ class observation:
       
       obs_var = None;
       
-      def __init__(self,err_obs, obs_indexes, nonlinear_obs=False, scalefact=1.0):
+      def __init__(self,err_obs, obs_indexes, nonlinear_obs=False, scalefact=1.0, normalize_nonlinear=True, nonlinear_operator_type='arctan'):
           self.err_obs = err_obs;
           self.obs_var = obs_indexes;
           self.nonlinear_obs = bool(nonlinear_obs)
           self.scalefact = float(scalefact)
+          self.normalize_nonlinear = bool(normalize_nonlinear)
+          self.nonlinear_operator_type = str(nonlinear_operator_type)
           
           
  
@@ -202,7 +204,7 @@ class observation:
                        wind_errors[w_name] = 1.0
           
           # --- Precompute spatial statistics from t=0 for Z-score normalization ---
-          if self.nonlinear_obs:
+          if self.nonlinear_obs and self.normalize_nonlinear:
               xs_init = rs.x_ref[0]
               for block_idx, (ma, R_data, H_sparse) in enumerate(zip(mask_cor, self.obs_R_sparse, self.obs_H_sparse)):
                   mu_field = []
@@ -261,11 +263,18 @@ class observation:
                   
                   # Apply nonlinear operator if requested (Standard Vars)
                   if self.nonlinear_obs:
-                      mu_vec = R_data['mu_vec'].reshape((-1, 1))
-                      std_vec = R_data['std_vec'].reshape((-1, 1))
-                      Hx_norm = (Hx - mu_vec) / std_vec
-                      # Nonlinear observation operator: h(x) = arctan(sf * x_norm)
-                      Hx = np.arctan(self.scalefact * Hx_norm)
+                      if self.normalize_nonlinear:
+                          mu_vec = R_data['mu_vec'].reshape((-1, 1))
+                          std_vec = R_data['std_vec'].reshape((-1, 1))
+                          Hx_norm = (Hx - mu_vec) / std_vec
+                      else:
+                          Hx_norm = Hx
+                      # Evaluate the selected nonlinear operator
+                      if self.nonlinear_operator_type == 'arctan_sq':
+                          Hx = np.arctan((self.scalefact * Hx_norm) ** 2)
+                      else:
+                          # default: arctan
+                          Hx = np.arctan(self.scalefact * Hx_norm)
                   
                   # Add noise
                   y = Hx + R_sqrt @ np.random.randn(m_obs,1);

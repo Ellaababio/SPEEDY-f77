@@ -328,11 +328,12 @@ class ensemble_DA:
 ##########################################################################################
 ##########################################################################################
 class EnKF_MC_obs(ensemble_DA):
-    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_err=None):
+    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_err=None, nonlinear_operator_type='arctan'):
         super().__init__(nm, infla, Nens)
         self.nonlinear_obs = bool(nonlinear_obs)
         self.scalefact = float(scalefact)
         self.wind_err = wind_err if wind_err is not None else {}
+        self.nonlinear_operator_type = str(nonlinear_operator_type)
             
     
     def prepare_background(self):
@@ -515,9 +516,13 @@ class EnKF_MC_obs(ensemble_DA):
               Hb_std = Hb_X[:n_std, :]
               Ys_std = Ys[:n_std, :]
               
-              # Apply nonlinear forward operator h(x) = arctan(sf * Hx) on ensemble predictions
-              # Observations are already in h-space (generated as arctan(sf*Hx) + noise in observation.py)
-              Hb_final_std = np.arctan(sf * Hb_std)
+              # Apply nonlinear forward operator on ensemble predictions
+              # Observations are already in h-space (generated in observation.py)
+              if self.nonlinear_operator_type == 'arctan_sq':
+                  Hb_final_std = np.arctan((sf * Hb_std) ** 2)
+              else:
+                  # Default: arctan(sf * Hx)
+                  Hb_final_std = np.arctan(sf * Hb_std)
               
               Ds_std = Ys_std - Hb_final_std
               
@@ -571,12 +576,14 @@ class EnKF_MC_obs(ensemble_DA):
 ##########################################################################################
 class LETKF(ensemble_DA):
             
-    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None):
+    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None, normalize_nonlinear=True, nonlinear_operator_type='arctan'):
         super().__init__(nm, infla, Nens)
         self.nonlinear_obs = bool(nonlinear_obs)
         self.scalefact = float(scalefact)
         self.wind_nonlinear_operator = wind_nonlinear_operator
         self.wind_err = wind_err if wind_err is not None else {}
+        self.normalize_nonlinear = bool(normalize_nonlinear)
+        self.nonlinear_operator_type = str(nonlinear_operator_type)
         
     
     def prepare_background(self):
@@ -730,12 +737,15 @@ class LETKF(ensemble_DA):
                      # Apply nonlinear forward operator h(x) = arctan(sf * Hx) on ensemble
                      Hb_i_ens = H_i_lin @ XB_i  # (m_i, Nens)
                      
-                     if mu_model is not None and std_model is not None:
+                     if self.normalize_nonlinear and mu_model is not None and std_model is not None:
                          mu_i = mu_model[lbo_i[H_ind]].reshape((m_i, 1))
                          std_i = std_model[lbo_i[H_ind]].reshape((m_i, 1))
                          Hb_i_ens = (Hb_i_ens - mu_i) / std_i
                          
-                     Hb_i_ens_nl = np.arctan(sf * Hb_i_ens)
+                     if self.nonlinear_operator_type == 'arctan_sq':
+                         Hb_i_ens_nl = np.arctan((sf * Hb_i_ens) ** 2)
+                     else:
+                         Hb_i_ens_nl = np.arctan(sf * Hb_i_ens)
                      Hb_i_ens_nl_mean = np.mean(Hb_i_ens_nl, axis=1, keepdims=True)
 
               
@@ -1014,7 +1024,8 @@ class ReverseSDE(ensemble_DA):
                  state_clip: float = 20.0,
                  rng_seed: int = 42,
                  track_gridpoint_locs: list = None,
-                 wind_err=None):
+                 wind_err=None,
+                 nonlinear_operator_type: str = 'arctan'):
         super().__init__(nm, infla, Nens)
         self.p_time_step = int(pseudo_time_steps)
         self.eps_alpha = float(eps_alpha)
@@ -1022,6 +1033,7 @@ class ReverseSDE(ensemble_DA):
         self.eps_beta = float(eps_beta)
         self.nonlinear_obs = bool(nonlinear_obs)
         self.normalize = bool(normalize)
+        self.nonlinear_operator_type = str(nonlinear_operator_type)
         self.drift_type = drift_type
         self.enable_early_stopping = bool(enable_early_stopping)
         self.enable_early_stopping = bool(enable_early_stopping)
@@ -1911,12 +1923,16 @@ class ReverseSDE(ensemble_DA):
                     # 2. Compress to the observation's localized-climatology Z-space
                     X_c_norm = (X_phys - mu_vec_t) / std_vec_t
                     
-                    # 3. Evaluate Observation Forward Operator
-                    h_xt = _torch.atan(sf * X_c_norm)
-                    
-                    # 4. Exact Chain Rule Jacobian: d(h_xt)/d(xt)
-                    # Note: std_X0 and std_vec_t are (m,) vectors.
-                    jacobian = (sf / (1.0 + (sf * X_c_norm) ** 2)) * (std_X0 / std_vec_t)
+                    # 3 & 4. Evaluate Observation Forward Operator & Exact Chain Rule Jacobian
+                    if self.nonlinear_operator_type == 'arctan_sq':
+                        u = sf * X_c_norm
+                        h_xt = _torch.atan(u ** 2)
+                        jacobian = (2.0 * u / (1.0 + u ** 4)) * (sf * std_X0 / std_vec_t)
+                    else:
+                        h_xt = _torch.atan(sf * X_c_norm)
+                        # Exact Chain Rule Jacobian: d(h_xt)/d(xt)
+                        # Note: std_X0 and std_vec_t are (m,) vectors.
+                        jacobian = (sf / (1.0 + (sf * X_c_norm) ** 2)) * (std_X0 / std_vec_t)
                     
                     # 5. Likelihood Score
                     like_score = -(h_xt - y) / (sigma ** 2) * jacobian
@@ -2177,16 +2193,16 @@ class sequential_method:
       def __init__(self, method_name):
           self.method_name = method_name;
       
-      def get_instance(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None):
+      def get_instance(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None, normalize_nonlinear=True, nonlinear_operator_type='arctan'):
         if self.method_name == "EnKF_MC":
             return EnKF_MC(nm, infla, Nens);
         elif self.method_name == "EnKF_MC_obs":
             # Pass wind_err if provided, else default to None/empty
-            return EnKF_MC_obs(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err);
+            return EnKF_MC_obs(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err, nonlinear_operator_type=nonlinear_operator_type);
         elif self.method_name == "ReverseSDE":
-             return ReverseSDE(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err);
+             return ReverseSDE(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_err=wind_err, nonlinear_operator_type=nonlinear_operator_type);
         elif self.method_name == "LETKF":
-            return LETKF(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err);
+            return LETKF(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err, normalize_nonlinear=normalize_nonlinear, nonlinear_operator_type=nonlinear_operator_type);
         else:
             print("Method not found : ", self.method_name);
             return None;

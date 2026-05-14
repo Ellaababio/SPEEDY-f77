@@ -108,8 +108,8 @@ def main():
     # IYEAR0=1979, IMONT0=1
     START_DATE = datetime(1979, 1, 1, 0, 0, 0)
 
-    # In amlcs_da.py and typical runs, cycle_length is usually exactly 6 hours.
-    CYCLE_HOURS = 6
+    # Set to 48 hours to match the obs_steps=2 configuration (2 days per cycle)
+    CYCLE_HOURS = 48
 
     def get_cycle_date(cycle_num):
         return START_DATE + timedelta(hours=(cycle_num * CYCLE_HOURS))

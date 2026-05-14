@@ -26,7 +26,7 @@ OUTPUT_WIND_ERR = os.path.join(OUTPUT_DIR, "error_wind_u_evolution_pair.gif")
 P0_HPA = 1000.0  # Reference pressure
 WIND_LEVEL = 7   # Plot lowest level wind (0-7 indexing, 7 is typically 925 hPa)
 START_DATE = datetime(1979, 1, 1, 0, 0, 0)
-CYCLE_HOURS = 6
+CYCLE_HOURS = 48  # 48 hours (2 days) per cycle
 
 def _extract_cycle_num(filename, prefix="free_run_"):
     m = re.search(rf'{prefix}(\d+)\.nc', filename.name)

@@ -25,8 +25,8 @@ from netCDF4 import Dataset
 
 # ======================= USER SETTINGS =======================
 # Experiment Directories
-EXP_DIR   = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/linear_results_1percent_obs_err/data"
-EXP_DIR_2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/linear_results_1percent_obs_err/data"  # Second experiment (only used when DUAL_MODE = True)
+EXP_DIR   = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_x2/data"
+EXP_DIR_2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100/arctan_x2/data"  # Second experiment (only used when DUAL_MODE = True)
 
 # Human-readable labels
 EXP_LABEL_1 = "ReverseSDE"
