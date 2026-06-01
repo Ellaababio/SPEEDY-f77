@@ -676,37 +676,71 @@ class LETKF(ensemble_DA):
           std_model = H.T @ std_vec if std_vec is not None else None
           
           
-          Ri_space = H.T @ (Ri @ H);
-          Ri_space = Ri_space.toarray();
+          # R is diagonal, so H^T R^{-1} H is diagonal too. Extract only the
+          # diagonal (length-n vector) instead of densifying to an (n x n)
+          # matrix, which is prohibitive for large multi-variable blocks
+          # (e.g. option_mask=1, where a block can be ~16k x 16k -> ~2 GB).
+          Ri_space_diag = np.asarray((H.T @ (Ri @ H)).diagonal()).ravel();
           
           XA = np.zeros((n, Nens));
           
-          # Nonlinear Wind Setup
+          # ---------------------------------------------------------------
+          # Nonlinear wind (WDG1/WSG1) setup. Two block layouts are supported:
+          #   option_mask=2 -> UG1 and VG1 are in separate single-variable
+          #                    blocks; the partner component is read from the
+          #                    neighbouring block (legacy behaviour, unchanged).
+          #   option_mask=1 -> UG1 and VG1 are in the SAME (per-level) block;
+          #                    both components are read directly from this block,
+          #                    so any component whose local box contains a wind
+          #                    station is updated by the wind obs.
+          # ---------------------------------------------------------------
           ob = getattr(self, 'ob', None)
           k_step = getattr(self, 'current_k', 0)
           
           block_var_name = None
           block_level = None
-          is_wind_update = False
+          is_wind_update = False      # option_mask=2 partner-block path
           wind_mode = None
+          wind_same_block = False     # option_mask=1 same-block path
+          partner_info = None
+          idx_u_blk = None
+          idx_v_blk = None
+          phys_of = None
           
-          # Identify if this block is UG1 or VG1
           if block_idx is not None and len(self.nm.mask_cor) > block_idx and len(self.nm.mask_cor[block_idx]) > 0:
                v_inf, _ = self.nm.mask_cor[block_idx][0]
                block_var_idx, block_level = v_inf
                block_var_name = self.nm.var_names[block_var_idx]
           
-          if getattr(self, 'wind_nonlinear_operator', False):
-               if block_var_name == 'UG1': wind_mode = 'u'
-               elif block_var_name == 'VG1': wind_mode = 'v'
+          if getattr(self, 'wind_nonlinear_operator', False) and ob is not None and block_idx is not None:
+               blk_idx_map = self.get_block_indices(block_idx)
+               has_u = np.size(blk_idx_map.get('UG1', [])) > 0
+               has_v = np.size(blk_idx_map.get('VG1', [])) > 0
                
-               if wind_mode and ob is not None:
-                    # Partner block logic
-                    partner_block_idx = block_idx + 1 if wind_mode == 'u' else block_idx - 1
-                    if 0 <= partner_block_idx < len(self.XB_map):
-                         partner_info = self.XB_map[partner_block_idx]
-                         partner_XB = partner_info['XB_b'] # Full block for partner
-                         is_wind_update = True
+               if has_u and has_v:
+                    # option_mask=1: both wind components live in this block.
+                    wind_same_block = True
+                    is_wind_update = True
+                    idx_u_blk = np.asarray(blk_idx_map['UG1']).astype('int32')
+                    idx_v_blk = np.asarray(blk_idx_map['VG1']).astype('int32')
+                    # map each block-local index to its physical gridpoint
+                    phys_of = np.empty(n, dtype='int32')
+                    off = 0
+                    for (v_info_p, res_p) in self.nm.mask_cor[block_idx]:
+                        lat_p, lon_p = res_p
+                        N_p = int(lat_p) * int(lon_p)
+                        phys_of[off:off+N_p] = np.arange(N_p, dtype='int32')
+                        off += N_p
+               else:
+                    # option_mask=2: single-variable U or V block + partner block.
+                    if block_var_name == 'UG1': wind_mode = 'u'
+                    elif block_var_name == 'VG1': wind_mode = 'v'
+                    
+                    if wind_mode:
+                         partner_block_idx = block_idx + 1 if wind_mode == 'u' else block_idx - 1
+                         if 0 <= partner_block_idx < len(self.XB_map):
+                              partner_info = self.XB_map[partner_block_idx]
+                              is_wind_update = True
           
           for i in range(0, n):
               #local box for model component i
@@ -730,7 +764,7 @@ class LETKF(ensemble_DA):
                  J = H_ind;
                  H_i_lin = spa.coo_matrix((np.ones(m_i),(I,J)), shape=(m_i, n_i));
                  y_i_lin = y_model[lbo_i[H_ind]];
-                 Ri_i_lin = np.diag(Ri_space[lbo_i[H_ind], lbo_i[H_ind]]).reshape((m_i, m_i)); #local data error covariance matrix
+                 Ri_i_lin = np.diag(Ri_space_diag[lbo_i[H_ind]]).reshape((m_i, m_i)); #local data error covariance matrix
 
                  if self.nonlinear_obs:
                      sf = self.scalefact
@@ -754,7 +788,48 @@ class LETKF(ensemble_DA):
               wdg_sig, wsg_sig = [], []
               wdg_pred, wsg_pred = [], []
               
-              if is_wind_update:
+              if is_wind_update and wind_same_block:
+                  # option_mask=1: U and V are both in this block. For every wind
+                  # station whose physical gridpoint falls inside the local box of
+                  # component i, predict the wind from U/V at that gridpoint and
+                  # add it as a (nonlinear) local observation for component i.
+                  phys_box_mask = np.zeros(self.nm.gs.lat * self.nm.gs.lon, dtype=bool)
+                  phys_box_mask[phys_of[lbo_i]] = True
+                  
+                  def get_wind_local_same(wname):
+                      empty = (np.empty((0,)), np.empty((0,)), np.empty((0, 0)))
+                      if wname not in ob.wind_obs or block_level not in ob.wind_obs[wname]:
+                          return empty
+                      if k_step >= len(ob.y_wind_obs) or wname not in ob.y_wind_obs[k_step]:
+                          return empty
+                      data = ob.y_wind_obs[k_step][wname].get(block_level)
+                      if data is None:
+                          return empty
+                      meta = ob.wind_obs[wname][block_level]
+                      glob_stations = np.asarray(meta['stations']).astype('int32')
+                      data_flat = np.asarray(data).flatten()
+                      err_std = self.wind_err.get(wname, 1.0)
+                      
+                      in_box = phys_box_mask[glob_stations]
+                      if not in_box.any():
+                          return empty
+                      sel = np.where(in_box)[0]
+                      g_sel = glob_stations[sel]
+                      # U/V ensemble at the selected station gridpoints
+                      u_e = XB[idx_u_blk[g_sel], :]   # (n_sel, Nens)
+                      v_e = XB[idx_v_blk[g_sel], :]   # (n_sel, Nens)
+                      if wname == 'WDG1':
+                          pred = np.arctan2(u_e, v_e)
+                      else: # WSG1
+                          pred = np.sqrt(u_e**2 + v_e**2)
+                      vals = data_flat[sel]
+                      sig = np.full(sel.size, err_std)
+                      return vals, sig, pred
+                  
+                  wdg_vals, wdg_sig, wdg_pred = get_wind_local_same('WDG1')
+                  wsg_vals, wsg_sig, wsg_pred = get_wind_local_same('WSG1')
+              
+              elif is_wind_update:
                   partner_xb_i = partner_info['xb_b'][lbo_i]
                   partner_DX_i = partner_info['DX_b'][lbo_i]
                   
