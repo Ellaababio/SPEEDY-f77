@@ -64,7 +64,7 @@ def plot_2d_map(data_2d, lat, lon, var_name, level_name, out_path):
 
 def main():
     ens_dir = '/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20/ensemble_0'
-    out_dir = '/gpfs/home/jjs21b/AMLCS/runs/initial_gaussianity_maps'
+    out_dir = '/gpfs/home/jjs21b/AMLCS/runs/initial_gaussianity_maps_level_averaged'
 
     # Find all ensemble members
     file_pattern = os.path.join(ens_dir, "ensemble_member_*.nc")
@@ -148,7 +148,12 @@ def main():
         elif data.ndim == 4:
             # Shape is (Nens, levels, lat, lon)
             n_levels = data.shape[1]
+            all_levels_p_values = []
             for lev in range(n_levels):
+                if v == 'TRG1' and lev in [0, 1]:
+                    print(f"  Skipping level {lev} for {v}")
+                    continue
+                    
                 level_dir = os.path.join(out_dir, f"Level_{lev}")
                 os.makedirs(level_dir, exist_ok=True)
                 
@@ -163,9 +168,24 @@ def main():
                         else:
                             stat, p = shapiro(samples)
                         p_values[i, j] = p
-                        
+                
+                all_levels_p_values.append(p_values)
                 out_path = os.path.join(level_dir, f"{v}_shapiro_pval.png")
                 plot_2d_map(p_values, lat, lon, v, f"Level {lev}", out_path)
+            
+            # Calculate and plot the level-averaged p-values
+            all_levels_p_values = np.array(all_levels_p_values)
+            level_avg_p_values = np.mean(all_levels_p_values, axis=0)
+            
+            level_avg_dir = os.path.join(out_dir, "Level_Averaged")
+            os.makedirs(level_avg_dir, exist_ok=True)
+            out_path_avg = os.path.join(level_avg_dir, f"{v}_shapiro_pval_avg.png")
+            
+            global_median_p = np.median(all_levels_p_values)
+            print(f"  -> Global median p-value for {v} (all levels pooled): {global_median_p:.4f}")
+            print(f"  -> Median of level-averaged p-values for {v}: {np.median(level_avg_p_values):.4f}")
+            
+            plot_2d_map(level_avg_p_values, lat, lon, v, "Level-Averaged", out_path_avg)
 
     print(f"Done! All plots saved to {out_dir}")
 

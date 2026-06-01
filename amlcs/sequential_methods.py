@@ -576,7 +576,7 @@ class EnKF_MC_obs(ensemble_DA):
 ##########################################################################################
 class LETKF(ensemble_DA):
             
-    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None, normalize_nonlinear=True, nonlinear_operator_type='arctan'):
+    def __init__(self, nm, infla, Nens, nonlinear_obs=False, scalefact=1.0, wind_nonlinear_operator=False, wind_err=None, normalize_nonlinear=False, nonlinear_operator_type='arctan'):
         super().__init__(nm, infla, Nens)
         self.nonlinear_obs = bool(nonlinear_obs)
         self.scalefact = float(scalefact)

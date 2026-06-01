@@ -1,0 +1,145 @@
+  Hallo from Speedy_AGCM
+ calling INIFFT
+ calling INDYNS
+  Model half-level (*1000)           1           0
+  Model half-level (*1000)           2          50
+  Model half-level (*1000)           3         140
+  Model half-level (*1000)           4         260
+  Model half-level (*1000)           5         420
+  Model half-level (*1000)           6         600
+  Model half-level (*1000)           7         770
+  Model half-level (*1000)           8         900
+  Model half-level (*1000)           9        1000
+  Model full-level (*1000)           1          25
+  Model full-level (*1000)           2          95
+  Model full-level (*1000)           3         200
+  Model full-level (*1000)           4         340
+  Model full-level (*1000)           5         510
+  Model full-level (*1000)           6         685
+  Model full-level (*1000)           7         835
+  Model full-level (*1000)           8         950
+  temp/hum correction at level            2  0.66167368341273969        0.0000000000000000     
+  temp/hum correction at level            3  0.75399289734237440        8.0000000000000019E-003
+  temp/hum correction at level            4  0.82755908289241631        3.9303999999999992E-002
+  temp/hum correction at level            5  0.88857447279504564       0.13265100000000002     
+  temp/hum correction at level            6  0.93577679872957287       0.32141912500000008     
+  temp/hum correction at level            7  0.96885785555841186       0.58218287499999988     
+  temp/hum correction at level            8  0.99104107712276879       0.85737499999999989     
+ calling INPHYS
+ calling INBCON
+  read orography
+  read fractional land-sea mask
+  read surface albedo
+  reading land-surface temp.
+  checking land-surface temp.
+  field:            1    no. of faulty points:           0
+  field:            2    no. of faulty points:           0
+  field:            3    no. of faulty points:           0
+  field:            4    no. of faulty points:           0
+  field:            5    no. of faulty points:           0
+  field:            6    no. of faulty points:           0
+  field:            7    no. of faulty points:           0
+  field:            8    no. of faulty points:           0
+  field:            9    no. of faulty points:           0
+  field:           10    no. of faulty points:           0
+  field:           11    no. of faulty points:           0
+  field:           12    no. of faulty points:           0
+  undefined values set to   273.00000000000000     
+  reading snow depth
+  checking snow depth
+  field:            1    no. of faulty points:           0
+  field:            2    no. of faulty points:           0
+  field:            3    no. of faulty points:           0
+  field:            4    no. of faulty points:           0
+  field:            5    no. of faulty points:           0
+  field:            6    no. of faulty points:           0
+  field:            7    no. of faulty points:           0
+  field:            8    no. of faulty points:           0
+  field:            9    no. of faulty points:           0
+  field:           10    no. of faulty points:           0
+  field:           11    no. of faulty points:           0
+  field:           12    no. of faulty points:           0
+  undefined values set to   0.0000000000000000     
+  reading soil moisture
+  checking soil moisture
+  field:            1    no. of faulty points:           0
+  field:            2    no. of faulty points:           0
+  field:            3    no. of faulty points:           0
+  field:            4    no. of faulty points:           0
+  field:            5    no. of faulty points:           0
+  field:            6    no. of faulty points:           0
+  field:            7    no. of faulty points:           0
+  field:            8    no. of faulty points:           0
+  field:            9    no. of faulty points:           0
+  field:           10    no. of faulty points:           0
+  field:           11    no. of faulty points:           0
+  field:           12    no. of faulty points:           0
+  undefined values set to   0.0000000000000000     
+  reading sst
+  checking sst
+  field:            1    no. of faulty points:           0
+  field:            2    no. of faulty points:           0
+  field:            3    no. of faulty points:           0
+  field:            4    no. of faulty points:           0
+  field:            5    no. of faulty points:           0
+  field:            6    no. of faulty points:           0
+  field:            7    no. of faulty points:           0
+  field:            8    no. of faulty points:           0
+  field:            9    no. of faulty points:           0
+  field:           10    no. of faulty points:           0
+  field:           11    no. of faulty points:           0
+  field:           12    no. of faulty points:           0
+  undefined values set to   273.00000000000000     
+  reading sea ice
+  checking sea ice
+  field:            1    no. of faulty points:           0
+  field:            2    no. of faulty points:           0
+  field:            3    no. of faulty points:           0
+  field:            4    no. of faulty points:           0
+  field:            5    no. of faulty points:           0
+  field:            6    no. of faulty points:           0
+  field:            7    no. of faulty points:           0
+  field:            8    no. of faulty points:           0
+  field:            9    no. of faulty points:           0
+  field:           10    no. of faulty points:           0
+  field:           11    no. of faulty points:           0
+  field:           12    no. of faulty points:           0
+  undefined values set to   0.0000000000000000     
+  reading sst anomalies
+  checking sst anomalies
+  field:            1    no. of faulty points:           0
+  field:            2    no. of faulty points:           0
+  field:            3    no. of faulty points:           0
+  undefined values set to   0.0000000000000000     
+ calling INIRDF
+ calling INVARS
+  reading a restart file
+ **READING THE RESTART FILE ElíasN - NO TR**
+ Hi from read            0
+ step =     0 reke =  107.61  189.02  256.04  212.87  116.67   58.72   45.75   42.60
+              deke =    2.49   16.85   15.99    9.17    3.46    3.16    3.89    7.87
+              temp =  189.68  204.15  221.96  241.31  257.52  270.36  278.41  283.31
+ calling DMFLUX
+ calling DMOUT
+ calling TMOUT
+ inside TMOUT
+  reset to zero
+ end of TMOUT
+ calling SETCTL
+ calling SETCTL_D
+  instep: initial time step
+  semi-impl. initialization
+   Tref =    217.14995443460384     
+   Tref =    217.14995443460384     
+   Tref =    217.14995443460384     
+   Tref =    238.33701587301590     
+   Tref =    255.90944816497316     
+   Tref =    269.50371803411701     
+   Tref =    279.03106240082263     
+   Tref =    285.41983021135741     
+ Integration length in days:            2
+  Start of year/month =         1979           1
+          64          32           8
+           1           1           1
+          64          32           8
+ Finishing writting the restart file
