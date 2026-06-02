@@ -649,7 +649,8 @@ class LETKF(ensemble_DA):
         Pa_Nens = (Nens-1)*np.eye(Nens) + Yb.T @ ( Ri @ Yb );
         Q_temp = Yb.T @ (Ri @ d);
         
-        U, S, _ = np.linalg.svd(Pa_Nens, full_matrices=False);
+        S, U = np.linalg.eigh(Pa_Nens);
+        S = np.maximum(S, 1e-12);   # guard against round-off; true eigenvalues are >= Nens-1
         
         Pa_sqrt = U @ ( np.diag(np.sqrt(Nens/S)) @ U.T );
         Pa_invs = U @ ( np.diag(1/S) @ U.T );
@@ -953,7 +954,8 @@ class LETKF(ensemble_DA):
                   Pa_Nens = (Nens-1)*np.eye(Nens) + Yb_total.T @ ( Ri_total @ Yb_total );
                   Q_temp = Yb_total.T @ (Ri_total @ d_total);
                   
-                  U, S, _ = np.linalg.svd(Pa_Nens, full_matrices=False);
+                  S, U = np.linalg.eigh(Pa_Nens);
+                  S = np.maximum(S, 1e-12);   # guard against round-off; true eigenvalues are >= Nens-1
                   
                   Pa_sqrt = U @ ( np.diag(np.sqrt(Nens/S)) @ U.T );
                   Pa_invs = U @ ( np.diag(1/S) @ U.T );
