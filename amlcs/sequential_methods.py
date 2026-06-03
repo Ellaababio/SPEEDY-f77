@@ -919,8 +919,11 @@ class LETKF(ensemble_DA):
                           
                           Yb_non.append(yb_row)
                           
-                          perturbed_y = y_real[k] + sig[k] * np.random.randn()
-                          innov = perturbed_y - y_pred_mean
+                          # Use the observation directly. The wind obs already
+                          # carry their generation-time noise (observation.py),
+                          # and LETKF is a deterministic square-root filter, so
+                          # no additional per-cycle obs perturbation is added.
+                          innov = y_real[k] - y_pred_mean
                           if 'WDG' in wname_current:
                               innov = (innov + np.pi) % (2 * np.pi) - np.pi
                           
