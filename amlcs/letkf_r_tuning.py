@@ -422,11 +422,35 @@ def collect(args):
     df.to_csv(summary_path, index=False)
     print(f"\nSummary written: {summary_path}")
 
-    valid = df.dropna(subset=["overall_avg"])
-    if not valid.empty:
-        best = valid.loc[valid["overall_avg"].idxmin()]
-        print(f"Best r (lowest overall average analysis RMSE): "
-              f"r={int(best['r'])} (overall_avg={best['overall_avg']:.6g})")
+    # Best r by per-variable wins (scale-invariant): the r that achieves the
+    # lowest average RMSE for the greatest number of variables. Ties are broken
+    # by mean rank across variables, then by smaller r.
+    wins = {int(r): 0 for r in df["r"]}
+    rank_sums = {int(r): 0.0 for r in df["r"]}
+    rank_counts = {int(r): 0 for r in df["r"]}
+    n_scored = 0
+    for var in vars_list:
+        col = f"{var}_avg"
+        if col not in df.columns:
+            continue
+        sub = df[["r", col]].dropna(subset=[col])
+        if sub.empty:
+            continue
+        n_scored += 1
+        ranks = sub[col].rank(method="min", ascending=True)
+        for r_val, rk in zip(sub["r"], ranks):
+            rank_sums[int(r_val)] += float(rk)
+            rank_counts[int(r_val)] += 1
+        wins[int(sub.loc[sub[col].idxmin(), "r"])] += 1
+
+    if n_scored > 0 and any(wins.values()):
+        mean_rank = {r: (rank_sums[r] / rank_counts[r]) if rank_counts[r] else np.inf
+                     for r in wins}
+        best_r = sorted(wins, key=lambda r: (-wins[r], mean_rank[r], r))[0]
+        print(f"Best r (most per-variable wins): r={best_r} "
+              f"(wins {wins[best_r]}/{n_scored} variables, mean rank {mean_rank[best_r]:.3g})")
+        print("  Run `python letkf_best_r.py "
+              f"{os.path.relpath(summary_path, SCRIPT_DIR)}` for full diagnostics.")
     else:
         print("No valid runs to rank (no readable cycle files).")
 
