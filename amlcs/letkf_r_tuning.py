@@ -6,14 +6,20 @@ Two subcommands:
 
   submit   Generate one runner CSV per r value from a fixed observation
            template (only `r` and `exp_settings` are overridden), submit one
-           sbatch job per r running amlcs_da.py (LETKF), record a manifest, and
-           submit a dependent collection job that runs once all sweeps finish.
+           sbatch job per r running amlcs_da.py (LETKF) followed by an organize
+           step, record a manifest, and submit a dependent collection job that
+           runs once all sweeps finish.
 
-  collect  Read the manifest, compute the level-averaged analysis RMSE per
-           variable for each run (the same way error_plots_dual_nc.py does it),
-           reduce each per-cycle series to its average (mean over cycles) and
-           lowest (min over cycles) value, and write a summary CSV plus print
-           the best r.
+  organize Move one run's unified_cycle NetCDF files into
+           <run_folder>/<name>/data/. Runs automatically at the end of each r's
+           sbatch job (can also be run standalone).
+
+  collect  Read the manifest, move unified_cycle NetCDF files into
+           <run_folder>/<name>/data/ (postprocessing), compute the
+           level-averaged analysis RMSE per variable for each run (the same way
+           error_plots_dual_nc.py does it), reduce each per-cycle series to its
+           average (mean over cycles) and lowest (min over cycles) value, and
+           write a summary CSV plus print the best r.
 
 The idea: hold the observation configuration fixed (e.g. everything observed
 with arctan) and sweep r to find the value that minimizes analysis RMSE.
@@ -115,6 +121,45 @@ def _resolve(path_str):
     return p.resolve()
 
 
+def _cycle_data_dir(run_folder, campaign_name):
+    """Target directory for unified_cycle files: <run_folder>/<name>/data/."""
+    return Path(run_folder) / campaign_name / "data"
+
+
+def _organize_run_cycle_files(run_folder, campaign_name):
+    """
+    Move unified_cycle*.nc from the run directory root into <name>/data/.
+
+    amlcs_da writes cycles directly under the run folder; this step mirrors the
+    layout used elsewhere (e.g. wdg_only/data/unified_cycle0.nc).
+    """
+    run_folder = Path(run_folder)
+    dest = _cycle_data_dir(run_folder, campaign_name)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    moved = 0
+    for src in sorted(run_folder.glob("unified_cycle*.nc")):
+        if src.parent != run_folder:
+            continue
+        target = dest / src.name
+        if target.exists():
+            continue
+        shutil.move(str(src), str(target))
+        moved += 1
+    return dest, moved
+
+
+def organize(args):
+    """Move one run's unified_cycle files into <run_folder>/<name>/data/.
+
+    Intended to run inside each r's sbatch job right after amlcs_da.py finishes,
+    so subfolders are created per r as soon as that assimilation completes.
+    """
+    run_folder = Path(args.run_folder)
+    dest, moved = _organize_run_cycle_files(run_folder, args.name)
+    print(f"organize: moved {moved} unified_cycle file(s) -> {dest}")
+
+
 ###############################################################################
 # -------------------------------- submit ------------------------------------
 ###############################################################################
@@ -195,7 +240,11 @@ def submit(args):
 
         job_id = None
         if have_sbatch:
-            wrap = f'./run_py.sh amlcs_da.py {cfg_rel}'
+            # After the DA run finishes, organize this run's cycle files into
+            # <run_folder>/<name>/data/ within the same job.
+            organize_cmd = (f'./run_py.sh letkf_r_tuning.py organize '
+                            f'"{run_folder}" --name {args.name}')
+            wrap = f'./run_py.sh amlcs_da.py {cfg_rel} && {organize_cmd}'
             cmd = [
                 "sbatch",
                 f"--account={args.account}",
@@ -216,11 +265,13 @@ def submit(args):
             if job_id:
                 run_job_ids.append(job_id)
 
+        data_dir = run_folder / args.name / "data"
         runs.append({
             "r": r,
             "config": str(cfg_path),
             "config_rel": cfg_rel,
             "run_folder": str(run_folder),
+            "data_dir": str(data_dir),
             "job_id": job_id,
         })
         print(f"  r={r}: config={cfg_rel} -> run_folder={run_folder} job_id={job_id}")
@@ -277,16 +328,17 @@ def submit(args):
 # -------------------------------- collect -----------------------------------
 ###############################################################################
 
-def _available_cycles(run_folder, M):
+def _available_cycles(data_dir, M):
     """Cycle indices for which a unified_cycle file exists (0..M-1 superset)."""
+    data_dir = Path(data_dir)
     cycles = []
     for k in range(M):
-        if (Path(run_folder) / f"unified_cycle{k}.nc").exists():
+        if (data_dir / f"unified_cycle{k}.nc").exists():
             cycles.append(k)
     return cycles
 
 
-def _level_averaged_analysis_series(run_folder, snapshots_dir, var, cycles):
+def _level_averaged_analysis_series(data_dir, snapshots_dir, var, cycles):
     """
     Per-cycle level-averaged analysis RMSE series for one variable.
 
@@ -294,14 +346,14 @@ def _level_averaged_analysis_series(run_folder, snapshots_dir, var, cycles):
     Mirrors the level-averaged path of error_plots_dual_nc.py.
     """
     levels = _levels_for_var(var)
-    run_folder = Path(run_folder)
+    data_dir = Path(data_dir)
     snapshots_dir = Path(snapshots_dir)
 
     per_level = []
     for lev in levels:
         errs = []
         for k in cycles:
-            cycle_file = run_folder / f"unified_cycle{k}.nc"
+            cycle_file = data_dir / f"unified_cycle{k}.nc"
             truth_file = snapshots_dir / f"reference_solution_{k}.nc"
             try:
                 ana = _read_analysis_field(cycle_file, var, lev)
@@ -325,17 +377,21 @@ def collect(args):
     snapshots_dir = manifest["snapshots_dir"]
     M = int(manifest["M"])
     vars_list = manifest.get("vars", VARS)
+    campaign_name = manifest["name"]
     campaign_dir = manifest_path.parent
 
     rows = []
     for run in sorted(manifest["runs"], key=lambda d: d["r"]):
         r = run["r"]
         run_folder = run["run_folder"]
-        cycles = _available_cycles(run_folder, M)
+        data_dir, moved = _organize_run_cycle_files(run_folder, campaign_name)
+        if moved:
+            print(f"r={r}: moved {moved} unified_cycle file(s) -> {data_dir}")
+        cycles = _available_cycles(data_dir, M)
 
-        row = {"r": r, "run_folder": run_folder, "n_cycles": len(cycles)}
+        row = {"r": r, "run_folder": run_folder, "data_dir": str(data_dir), "n_cycles": len(cycles)}
         if not cycles:
-            print(f"r={r}: no unified_cycle*.nc files found in {run_folder} (skipping).")
+            print(f"r={r}: no unified_cycle*.nc files found in {data_dir} (skipping).")
             for var in vars_list:
                 row[f"{var}_avg"] = np.nan
                 row[f"{var}_min"] = np.nan
@@ -345,7 +401,7 @@ def collect(args):
 
         var_avgs = []
         for var in vars_list:
-            series = _level_averaged_analysis_series(run_folder, snapshots_dir, var, cycles)
+            series = _level_averaged_analysis_series(data_dir, snapshots_dir, var, cycles)
             if series.size == 0 or np.all(np.isnan(series)):
                 avg = np.nan
                 lowest = np.nan
@@ -399,7 +455,14 @@ def build_parser():
     p_sub.add_argument("--mem", default=DEFAULT_SBATCH["mem"])
     p_sub.set_defaults(func=submit)
 
-    p_col = sub.add_parser("collect", help="Compute RMSE summary from a manifest.")
+    p_org = sub.add_parser("organize",
+                           help="Move a single run's unified_cycle NetCDFs into <run_folder>/<name>/data/.")
+    p_org.add_argument("run_folder", help="Run directory containing unified_cycle*.nc files.")
+    p_org.add_argument("--name", required=True, help="Campaign name (subfolder under the run directory).")
+    p_org.set_defaults(func=organize)
+
+    p_col = sub.add_parser("collect",
+                           help="Organize cycle NetCDFs into <run>/<name>/data and compute RMSE summary.")
     p_col.add_argument("manifest", help="Path to manifest.json produced by submit.")
     p_col.set_defaults(func=collect)
 
