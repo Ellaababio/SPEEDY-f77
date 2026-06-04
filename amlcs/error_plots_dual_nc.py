@@ -17,18 +17,18 @@ Generates two families of plots for each variable:
 
 # FULL PATHS to the two experiment directories you want to compare:
 
-EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/final/data"
-EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_LETKF_4_1_100"
+EXP1 = "/gpfs/home/jjs21b/AMLCS/runs/t21_80_0.05_30_ReverseSDE_1_1_100/wsg_only/data"
+EXP2 = "/gpfs/home/jjs21b/AMLCS/runs/t21_80_0.05_30_LETKF_3_1_100/wsg_only_m1/data"
 
 # SPEEDY resolution:
 RESOLUTION = "t21"
 
 # Number of assimilation cycles to read (0-based indexing)
 # Number of assimilation cycles to read (0-based indexing)
-CYCLES = list(range(6))
+CYCLES = list(range(30))
 
 # Base directory for reference solutions (Truth/NoDA)
-REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/ENSF_gaussian_check/t21_50_0.05_20"
+REFERENCE_DIR = "/gpfs/home/jjs21b/AMLCS/LETKF_tuning/t21_80_0.05_30"
 
 # Variables to compare (only model variables):
 VARS = ["TG1", "UG1", "VG1", "TRG1", "PSG1"]
@@ -44,7 +44,7 @@ GENERATE_LOG_PLOTS = True
 
 # Explicit Output Directory (optional)
 # If set, plots will be saved here directly.
-OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_50_0.05_20_ReverseSDE_1_1_100/arctan_all_obs/letkf_m1_vs_reverseSDE"
+OUTPUT_DIR = "/gpfs/home/jjs21b/AMLCS/runs/t21_80_0.05_30_ReverseSDE_1_1_100/wsg_only/letkf_m1r3_vs_reverseSDE"
 
 # Output directory name (ignored if OUTPUT_DIR is set)
 PLOT_DIR_NAME = None  
