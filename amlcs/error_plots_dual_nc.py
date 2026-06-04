@@ -353,7 +353,7 @@ def _compute_error_series(exp_path: Path, method: str, var: str, lev: int, cycle
             errors.append(error)
             
         except (FileNotFoundError, KeyError) as e:
-            # print(f"Warning: Error computing {field_type} for cycle {cycle_k}: {e}") # Suppress
+            print(f"Warning: Error computing {field_type} for cycle {cycle_k}: {e}") # Suppress
             errors.append(np.nan)
     
     return np.array(errors)
