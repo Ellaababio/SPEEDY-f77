@@ -2,13 +2,14 @@
 """
 LETKF localization-radius (r) tuning sweep.
 
-Two subcommands:
+Sweeps a 2D grid of localization radius (r) x multiplicative inflation
+(infla). Two subcommands:
 
-  submit   Generate one runner CSV per r value from a fixed observation
-           template (only `r` and `exp_settings` are overridden), submit one
-           sbatch job per r running amlcs_da.py (LETKF) followed by an organize
-           step, record a manifest, and submit a dependent collection job that
-           runs once all sweeps finish.
+  submit   Generate one runner CSV per (r, infla) cell from a fixed
+           observation template (only `r`, `infla`, and `exp_settings` are
+           overridden), submit one sbatch job per cell running amlcs_da.py
+           followed by an organize step, record a manifest, and submit a
+           dependent collection job that runs once all sweeps finish.
 
   organize Move one run's unified_cycle NetCDF files into
            <run_folder>/<name>/data/. Runs automatically at the end of each r's
@@ -28,7 +29,8 @@ Examples
 --------
     python letkf_r_tuning.py submit \
         --template letkf_runner_nonlinear_sq.csv \
-        --r-values 2,4,6,8,10 \
+        --r-values 1,2,3,4,5 \
+        --infla-values 1.0,1.15,1.3,1.45,1.6 \
         --exp-settings ../LETKF_tuning/t21_80_0.05_30/ \
         --name arctan
 
@@ -169,14 +171,18 @@ def _read_config_value(exp_settings_dir, key):
     return cfg[key].iloc[0]
 
 
+def _infla_token(infla):
+    """Inflation token used in run-folder names (matches amlcs_da.py)."""
+    return int(round(100 * float(infla)))
+
+
 def _run_folder_name(template_df, code_path):
-    """Reproduce amlcs_da.py's method_path naming (minus the r token)."""
+    """Reproduce amlcs_da.py's method_path naming as a function of (r, infla)."""
     s = int(template_df["s"].iloc[0])
-    infla = float(template_df["infla"].iloc[0])
     method = str(template_df["method"].iloc[0]).strip()
 
-    def _make(r):
-        return f"{code_path}_{method}_{int(r)}_{s}_{int(100 * infla)}"
+    def _make(r, infla):
+        return f"{code_path}_{method}_{int(r)}_{s}_{_infla_token(infla)}"
 
     return _make
 
@@ -203,14 +209,19 @@ def submit(args):
     if not r_values:
         sys.exit("No r values provided (use --r-values 2,4,6,...).")
 
+    infla_values = [float(v.strip()) for v in args.infla_values.split(",") if v.strip() != ""]
+    if not infla_values:
+        sys.exit("No inflation values provided (use --infla-values 1.0,1.15,...).")
+
     code_path = str(_read_config_value(exp_settings_resolved, "code_path"))
     M = int(_read_config_value(exp_settings_resolved, "M"))
 
     template_df = pd.read_csv(template_path)
     folder_for = _run_folder_name(template_df, code_path)
 
-    # Campaign output layout: amlcs/letkf_tuning_runs/<name>/
-    campaign_dir = SCRIPT_DIR / "letkf_tuning_runs" / args.name
+    # Campaign output layout: amlcs/<campaign_root>/<name>/
+    campaign_root = getattr(args, "campaign_root", "letkf_tuning_runs")
+    campaign_dir = SCRIPT_DIR / campaign_root / args.name
     configs_dir = campaign_dir / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -223,58 +234,65 @@ def submit(args):
 
     runs = []
     run_job_ids = []
+    # 2D grid sweep: every (r, infla) cell is an independent run with its own
+    # config and run folder (the inflation token in the folder name keeps
+    # parallel runs from overwriting each other).
     for r in r_values:
-        df = template_df.copy()
-        df.loc[:, "r"] = r
-        # exp_settings is stored as-is (relative to amlcs) so amlcs_da.py
-        # resolves it the same way it resolves ../runs/.
-        df.loc[:, "exp_settings"] = args.exp_settings
+        for infla in infla_values:
+            ii = _infla_token(infla)
+            df = template_df.copy()
+            df.loc[:, "r"] = r
+            df.loc[:, "infla"] = infla
+            # exp_settings is stored as-is (relative to amlcs) so amlcs_da.py
+            # resolves it the same way it resolves ../runs/.
+            df.loc[:, "exp_settings"] = args.exp_settings
 
-        cfg_path = configs_dir / f"letkf_r{r}.csv"
-        df.to_csv(cfg_path, index=False)
+            cfg_path = configs_dir / f"r{r}_i{ii}.csv"
+            df.to_csv(cfg_path, index=False)
 
-        run_folder = runs_root / folder_for(r)
+            run_folder = runs_root / folder_for(r, infla)
 
-        # Path passed to run_py.sh / amlcs_da.py, relative to amlcs/.
-        cfg_rel = os.path.relpath(cfg_path, SCRIPT_DIR)
+            # Path passed to run_py.sh / amlcs_da.py, relative to amlcs/.
+            cfg_rel = os.path.relpath(cfg_path, SCRIPT_DIR)
 
-        job_id = None
-        if have_sbatch:
-            # After the DA run finishes, organize this run's cycle files into
-            # <run_folder>/<name>/data/ within the same job.
-            organize_cmd = (f'./run_py.sh letkf_r_tuning.py organize '
-                            f'"{run_folder}" --name {args.name}')
-            wrap = f'./run_py.sh amlcs_da.py {cfg_rel} && {organize_cmd}'
-            cmd = [
-                "sbatch",
-                f"--account={args.account}",
-                f"--partition={args.partition}",
-                f"--time={args.time}",
-                f"--mem={args.mem}",
-                "--nodes=1",
-                "--ntasks-per-node=1",
-                f"--job-name=letkf_r{r}",
-                f"--wrap={wrap}",
-            ]
-            result = subprocess.run(cmd, cwd=SCRIPT_DIR, capture_output=True, text=True)
-            print(result.stdout.strip())
-            if result.returncode != 0:
-                print(result.stderr.strip(), file=sys.stderr)
-                sys.exit(f"sbatch submission failed for r={r}")
-            job_id = _parse_job_id(result.stdout)
-            if job_id:
-                run_job_ids.append(job_id)
+            job_id = None
+            if have_sbatch:
+                # After the DA run finishes, organize this run's cycle files into
+                # <run_folder>/<name>/data/ within the same job.
+                organize_cmd = (f'./run_py.sh {Path(__file__).name} organize '
+                                f'"{run_folder}" --name {args.name}')
+                wrap = f'./run_py.sh amlcs_da.py {cfg_rel} && {organize_cmd}'
+                cmd = [
+                    "sbatch",
+                    f"--account={args.account}",
+                    f"--partition={args.partition}",
+                    f"--time={args.time}",
+                    f"--mem={args.mem}",
+                    "--nodes=1",
+                    "--ntasks-per-node=1",
+                    f"--job-name={args.name}_r{r}_i{ii}",
+                    f"--wrap={wrap}",
+                ]
+                result = subprocess.run(cmd, cwd=SCRIPT_DIR, capture_output=True, text=True)
+                print(result.stdout.strip())
+                if result.returncode != 0:
+                    print(result.stderr.strip(), file=sys.stderr)
+                    sys.exit(f"sbatch submission failed for r={r}, infla={infla}")
+                job_id = _parse_job_id(result.stdout)
+                if job_id:
+                    run_job_ids.append(job_id)
 
-        data_dir = run_folder / args.name / "data"
-        runs.append({
-            "r": r,
-            "config": str(cfg_path),
-            "config_rel": cfg_rel,
-            "run_folder": str(run_folder),
-            "data_dir": str(data_dir),
-            "job_id": job_id,
-        })
-        print(f"  r={r}: config={cfg_rel} -> run_folder={run_folder} job_id={job_id}")
+            data_dir = run_folder / args.name / "data"
+            runs.append({
+                "r": r,
+                "infla": infla,
+                "config": str(cfg_path),
+                "config_rel": cfg_rel,
+                "run_folder": str(run_folder),
+                "data_dir": str(data_dir),
+                "job_id": job_id,
+            })
+            print(f"  r={r} infla={infla}: config={cfg_rel} -> run_folder={run_folder} job_id={job_id}")
 
     manifest = {
         "name": args.name,
@@ -285,6 +303,8 @@ def submit(args):
         "code_path": code_path,
         "M": M,
         "vars": VARS,
+        "r_values": r_values,
+        "infla_values": infla_values,
         "runs": runs,
     }
     manifest_path = campaign_dir / "manifest.json"
@@ -296,7 +316,7 @@ def submit(args):
     if have_sbatch and run_job_ids:
         manifest_rel = os.path.relpath(manifest_path, SCRIPT_DIR)
         dep = ":".join(run_job_ids)
-        wrap = f'./run_py.sh letkf_r_tuning.py collect {manifest_rel}'
+        wrap = f'./run_py.sh {Path(__file__).name} collect {manifest_rel}'
         cmd = [
             "sbatch",
             f"--account={args.account}",
@@ -305,7 +325,7 @@ def submit(args):
             f"--mem={args.mem}",
             "--nodes=1",
             "--ntasks-per-node=1",
-            f"--job-name=letkf_r_collect_{args.name}",
+            f"--job-name=collect_{args.name}",
             f"--dependency=afterok:{dep}",
             f"--wrap={wrap}",
         ]
@@ -314,14 +334,14 @@ def submit(args):
         if result.returncode != 0:
             print(result.stderr.strip(), file=sys.stderr)
             print("WARNING: failed to submit dependent collection job. Run "
-                  f"`python letkf_r_tuning.py collect {manifest_rel}` manually "
+                  f"`python {Path(__file__).name} collect {manifest_rel}` manually "
                   "after the sweeps finish.", file=sys.stderr)
         else:
             print(f"Collection job submitted (afterok:{dep}).")
     else:
         manifest_rel = os.path.relpath(manifest_path, SCRIPT_DIR)
         print("\nNo collection job submitted. After the runs finish, run:")
-        print(f"  python letkf_r_tuning.py collect {manifest_rel}")
+        print(f"  python {Path(__file__).name} collect {manifest_rel}")
 
 
 ###############################################################################
@@ -381,17 +401,19 @@ def collect(args):
     campaign_dir = manifest_path.parent
 
     rows = []
-    for run in sorted(manifest["runs"], key=lambda d: d["r"]):
+    for run in sorted(manifest["runs"], key=lambda d: (d["r"], d.get("infla", 1.0))):
         r = run["r"]
+        infla = run.get("infla", 1.0)
         run_folder = run["run_folder"]
         data_dir, moved = _organize_run_cycle_files(run_folder, campaign_name)
         if moved:
-            print(f"r={r}: moved {moved} unified_cycle file(s) -> {data_dir}")
+            print(f"r={r} infla={infla}: moved {moved} unified_cycle file(s) -> {data_dir}")
         cycles = _available_cycles(data_dir, M)
 
-        row = {"r": r, "run_folder": run_folder, "data_dir": str(data_dir), "n_cycles": len(cycles)}
+        row = {"r": r, "infla": infla, "run_folder": run_folder,
+               "data_dir": str(data_dir), "n_cycles": len(cycles)}
         if not cycles:
-            print(f"r={r}: no unified_cycle*.nc files found in {data_dir} (skipping).")
+            print(f"r={r} infla={infla}: no unified_cycle*.nc files found in {data_dir} (skipping).")
             for var in vars_list:
                 row[f"{var}_avg"] = np.nan
                 row[f"{var}_min"] = np.nan
@@ -415,42 +437,49 @@ def collect(args):
 
         row["overall_avg"] = float(np.mean(var_avgs)) if var_avgs else np.nan
         rows.append(row)
-        print(f"r={r}: cycles={len(cycles)} overall_avg={row['overall_avg']:.6g}")
+        print(f"r={r} infla={infla}: cycles={len(cycles)} overall_avg={row['overall_avg']:.6g}")
 
     df = pd.DataFrame(rows)
     summary_path = campaign_dir / "rmse_summary.csv"
     df.to_csv(summary_path, index=False)
     print(f"\nSummary written: {summary_path}")
 
-    # Best r by per-variable wins (scale-invariant): the r that achieves the
-    # lowest average RMSE for the greatest number of variables. Ties are broken
-    # by mean rank across variables, then by smaller r.
-    wins = {int(r): 0 for r in df["r"]}
-    rank_sums = {int(r): 0.0 for r in df["r"]}
-    rank_counts = {int(r): 0 for r in df["r"]}
+    # Best (r, infla) cell by per-variable wins (scale-invariant): the cell that
+    # achieves the lowest average RMSE for the greatest number of variables.
+    # Ties are broken by mean rank across variables, then smaller r, then
+    # smaller infla.
+    def _cell(run_row):
+        return (int(run_row["r"]), float(run_row["infla"]))
+
+    cells = [_cell(r) for _, r in df.iterrows()]
+    wins = {c: 0 for c in cells}
+    rank_sums = {c: 0.0 for c in cells}
+    rank_counts = {c: 0 for c in cells}
     n_scored = 0
     for var in vars_list:
         col = f"{var}_avg"
         if col not in df.columns:
             continue
-        sub = df[["r", col]].dropna(subset=[col])
+        sub = df[["r", "infla", col]].dropna(subset=[col])
         if sub.empty:
             continue
         n_scored += 1
         ranks = sub[col].rank(method="min", ascending=True)
-        for r_val, rk in zip(sub["r"], ranks):
-            rank_sums[int(r_val)] += float(rk)
-            rank_counts[int(r_val)] += 1
-        wins[int(sub.loc[sub[col].idxmin(), "r"])] += 1
+        for (_, srow), rk in zip(sub.iterrows(), ranks):
+            c = (int(srow["r"]), float(srow["infla"]))
+            rank_sums[c] += float(rk)
+            rank_counts[c] += 1
+        best_row = sub.loc[sub[col].idxmin()]
+        wins[(int(best_row["r"]), float(best_row["infla"]))] += 1
 
     if n_scored > 0 and any(wins.values()):
-        mean_rank = {r: (rank_sums[r] / rank_counts[r]) if rank_counts[r] else np.inf
-                     for r in wins}
-        best_r = sorted(wins, key=lambda r: (-wins[r], mean_rank[r], r))[0]
-        print(f"Best r (most per-variable wins): r={best_r} "
-              f"(wins {wins[best_r]}/{n_scored} variables, mean rank {mean_rank[best_r]:.3g})")
-        print("  Run `python letkf_best_r.py "
-              f"{os.path.relpath(summary_path, SCRIPT_DIR)}` for full diagnostics.")
+        mean_rank = {c: (rank_sums[c] / rank_counts[c]) if rank_counts[c] else np.inf
+                     for c in wins}
+        best_cell = sorted(wins, key=lambda c: (-wins[c], mean_rank[c], c[0], c[1]))[0]
+        br, bi = best_cell
+        print(f"Best (r, infla) (most per-variable wins): r={br} infla={bi} "
+              f"(wins {wins[best_cell]}/{n_scored} variables, mean rank {mean_rank[best_cell]:.3g})")
+        print(f"  Summary CSV: {os.path.relpath(summary_path, SCRIPT_DIR)}")
     else:
         print("No valid runs to rank (no readable cycle files).")
 
@@ -459,25 +488,40 @@ def collect(args):
 # --------------------------------- CLI --------------------------------------
 ###############################################################################
 
-def build_parser():
+def build_parser(default_template=None,
+                 default_infla="1.0,1.15,1.3,1.45,1.6",
+                 default_r=None,
+                 default_name="arctan",
+                 campaign_root="letkf_tuning_runs",
+                 default_exp_settings="../LETKF_tuning/t21_80_0.05_30/"):
+    """Build the CLI parser.
+
+    Defaults are parameterized so a sibling script (e.g. reversesde_tuning.py)
+    can reuse the same submit/organize/collect engine with its own template,
+    inflation grid, localization values, campaign name, and campaign output
+    root. When `default_r` is set, `--r-values` becomes optional (used by the
+    score filter, where r does not affect localization and is held fixed).
+    """
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_sub = sub.add_parser("submit", help="Generate configs and submit the r sweep.")
-    p_sub.add_argument("--template", required=True,
-                       help="Path to a template LETKF runner CSV (fixed obs config).")
-    p_sub.add_argument("--r-values", required=True,
-                       help="Comma-separated list of localization radii, e.g. 2,4,6,8.")
-    p_sub.add_argument("--exp-settings", default="../LETKF_tuning/t21_80_0.05_30/",
+    p_sub = sub.add_parser("submit", help="Generate configs and submit the (r x infla) grid sweep.")
+    p_sub.add_argument("--template", required=(default_template is None), default=default_template,
+                       help="Path to a template runner CSV (fixed obs config).")
+    p_sub.add_argument("--r-values", required=(default_r is None), default=default_r,
+                       help="Comma-separated list of localization radii, e.g. 1,2,3,4,5.")
+    p_sub.add_argument("--infla-values", default=default_infla,
+                       help="Comma-separated list of inflation factors, e.g. 1.0,1.15,1.3,1.45,1.6.")
+    p_sub.add_argument("--exp-settings", default=default_exp_settings,
                        help="exp_settings folder (truth/free_run source), relative to amlcs/.")
-    p_sub.add_argument("--name", default="arctan",
-                       help="Campaign name; outputs go to letkf_tuning_runs/<name>/.")
+    p_sub.add_argument("--name", default=default_name,
+                       help=f"Campaign name; outputs go to {campaign_root}/<name>/.")
     p_sub.add_argument("--account", default=DEFAULT_SBATCH["account"])
     p_sub.add_argument("--partition", default=DEFAULT_SBATCH["partition"])
     p_sub.add_argument("--time", default=DEFAULT_SBATCH["time"])
     p_sub.add_argument("--mem", default=DEFAULT_SBATCH["mem"])
-    p_sub.set_defaults(func=submit)
+    p_sub.set_defaults(func=submit, campaign_root=campaign_root)
 
     p_org = sub.add_parser("organize",
                            help="Move a single run's unified_cycle NetCDFs into <run_folder>/<name>/data/.")

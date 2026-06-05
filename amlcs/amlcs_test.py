@@ -71,7 +71,7 @@ def main():
     ini0_no_restart = [ini_times, 0, 0];
     #print(df_par['code'])
      
-    method_path = code_path+'_'+method+'_'+str(r)+'_'+str(s)+'_'+str(int(100*infla));
+    method_path = code_path+'_'+method+'_'+str(r)+'_'+str(s)+'_'+str(int(round(100*infla)));
     
     path = '../test/';
 

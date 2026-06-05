@@ -646,11 +646,14 @@ class LETKF(ensemble_DA):
         #print(f'xb {xb.shape}');
         #print(f'y {y.shape}');
         
-        Pa_Nens = (Nens-1)*np.eye(Nens) + Yb.T @ ( Ri @ Yb );
+        # Paper-faithful prior (multiplicative) inflation: the (k-1)I term is
+        # divided by rho = self.infla so that Pa_invs equals Szunyogh et al.
+        # (2008) step (v): tilde{P}^a_[l] = [(k-1)I/rho + C_[l] Yb_[l]]^-1.
+        Pa_Nens = ((Nens-1)/self.infla)*np.eye(Nens) + Yb.T @ ( Ri @ Yb );
         Q_temp = Yb.T @ (Ri @ d);
         
         S, U = np.linalg.eigh(Pa_Nens);
-        S = np.maximum(S, 1e-12);   # guard against round-off; true eigenvalues are >= Nens-1
+        S = np.maximum(S, 1e-12);   # guard against round-off; true eigenvalues are >= (Nens-1)/infla
         
         Pa_sqrt = U @ ( np.diag(np.sqrt(Nens/S)) @ U.T );
         Pa_invs = U @ ( np.diag(1/S) @ U.T );
@@ -954,11 +957,14 @@ class LETKF(ensemble_DA):
                   if nonlinear_m > 0: Ri_total[m_i:, m_i:] = Ri_non_arr
                   
                   # 4. Local Letkf SVD update (inlining perform_assimilation_local_box logic)
-                  Pa_Nens = (Nens-1)*np.eye(Nens) + Yb_total.T @ ( Ri_total @ Yb_total );
+                  # Paper-faithful prior (multiplicative) inflation: divide the
+                  # (k-1)I term by rho = self.infla so Pa_invs equals Szunyogh et
+                  # al. (2008) step (v): [(k-1)I/rho + C_[l] Yb_[l]]^-1.
+                  Pa_Nens = ((Nens-1)/self.infla)*np.eye(Nens) + Yb_total.T @ ( Ri_total @ Yb_total );
                   Q_temp = Yb_total.T @ (Ri_total @ d_total);
                   
                   S, U = np.linalg.eigh(Pa_Nens);
-                  S = np.maximum(S, 1e-12);   # guard against round-off; true eigenvalues are >= Nens-1
+                  S = np.maximum(S, 1e-12);   # guard against round-off; true eigenvalues are >= (Nens-1)/infla
                   
                   Pa_sqrt = U @ ( np.diag(np.sqrt(Nens/S)) @ U.T );
                   Pa_invs = U @ ( np.diag(1/S) @ U.T );
