@@ -1,0 +1,6 @@
+r,infla,run_folder,data_dir,n_cycles,TG1_avg,TG1_min,UG1_avg,UG1_min,VG1_avg,VG1_min,TRG1_avg,TRG1_min,PSG1_avg,PSG1_min,overall_avg
+1,0.6,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_60,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_60/case1_linear/data,0,,,,,,,,,,,
+1,0.8,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_80,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_80/case1_linear/data,0,,,,,,,,,,,
+1,1.0,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_100,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_100/case1_linear/data,0,,,,,,,,,,,
+1,1.2,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_120,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_120/case1_linear/data,0,,,,,,,,,,,
+1,1.4,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_140,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_140/case1_linear/data,0,,,,,,,,,,,

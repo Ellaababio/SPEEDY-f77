@@ -1,0 +1,2 @@
+r,infla,run_folder,data_dir,n_cycles,TG1_avg,TG1_min,UG1_avg,UG1_min,VG1_avg,VG1_min,TRG1_avg,TRG1_min,PSG1_avg,PSG1_min,overall_avg
+1,1.0,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_100,/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_100/single_run_r1_i100/data,0,,,,,,,,,,,

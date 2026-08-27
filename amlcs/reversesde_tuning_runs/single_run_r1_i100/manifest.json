@@ -1,0 +1,33 @@
+{
+  "name": "single_run_r1_i100",
+  "template": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/ensf_runner_linear_m2.csv",
+  "exp_settings": "../LETKF_tuning/t21_80_0.05_30/",
+  "exp_settings_resolved": "/gpfs/home/ea25e/SPEEDY-f77/LETKF_tuning/t21_80_0.05_30",
+  "snapshots_dir": "/gpfs/home/ea25e/SPEEDY-f77/LETKF_tuning/t21_80_0.05_30/snapshots",
+  "code_path": "t21_80_0.05_30",
+  "M": 30,
+  "vars": [
+    "TG1",
+    "UG1",
+    "VG1",
+    "TRG1",
+    "PSG1"
+  ],
+  "r_values": [
+    1
+  ],
+  "infla_values": [
+    1.0
+  ],
+  "runs": [
+    {
+      "r": 1,
+      "infla": 1.0,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/reversesde_tuning_runs/single_run_r1_i100/configs/r1_i100.csv",
+      "config_rel": "reversesde_tuning_runs/single_run_r1_i100/configs/r1_i100.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_100",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_ReverseSDE_1_1_100/single_run_r1_i100/data",
+      "job_id": "12409649"
+    }
+  ]
+}

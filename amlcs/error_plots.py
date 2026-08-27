@@ -35,59 +35,33 @@ pslvl = [30, 100, 200, 300, 500, 700, 850, 925]
 
 
 def single_error_plotter(analysis, background, var, lvl, ppt, plots_path):
-
     lvl_str = str(lvl)
-    eps = 1e-12
-
-    ana_raw = analysis[lvl_str].to_numpy(dtype=float)
-    bkg_raw = background[lvl_str].to_numpy(dtype=float)
-    noda_raw = np.asarray(ppt.noda[var][lvl, :], dtype=float)
-
-    # equalize lengths first
-    L = min(len(ana_raw), len(bkg_raw), len(noda_raw))
-    ana_raw, bkg_raw, noda_raw = ana_raw[:L], bkg_raw[:L], noda_raw[:L]
-    if L == 0:
-        return
-
-    # ---- choose a common anchor ----
-    # Option A (recommended): anchor on NoDA's first value
-    anchor = noda_raw[:1]
-    # Option B: anchor on Background's first value
-    # anchor = bkg_raw[:1]
-
-    # prepend the SAME anchor to all
-    ana = np.concatenate([anchor, ana_raw])
-    bkg = np.concatenate([anchor, bkg_raw])
-    noda = np.concatenate([anchor, noda_raw])
-
-    # log with epsilon
-    ana_log = np.log(ana + eps)
-    bkg_log = np.log(bkg + eps)
-    noda_log = np.log(noda + eps)
-
-    # first TRUE cycle is index 1 (index 0 is the visual anchor)
-    if abs(bkg_log[1] - noda_log[1]) > 1e-6:
-        print(f"[plot][warn] {var} lvl={lvl}: Background vs NoDA differ at M=1 by {abs(bkg_log[1]-noda_log[1]):.3e} (log-scale).")
-
-    xs = np.arange(0, L + 1)  # 0 = anchor, 1..L = cycles
+    zero = pd.Series(background[lvl_str].values[0])
+    data_analysis_by_level = np.log(zero.append(analysis[lvl_str]))
+    data_backgroudn_by_level = np.log(zero.append(background[lvl_str]))
+    fr = np.log(ppt.noda[var][lvl, :])
 
     plt.figure(figsize=(9, 4))
-    plt.title(rf"$\mathrm{{{var_codes[var]}}} \ at \ {pslvl[lvl]} \ \mathrm{{mb}}$")
-    plt.plot(xs, ana_log, color="r", label="Analysis")
-    plt.plot(xs, bkg_log, color="b", label="Background")
-    plt.plot(xs, noda_log, color="k", label="NODA")
-    plt.ylabel(r"$\log(\mathcal{l}_2)$")
-    plt.xlabel(r"$\mathrm{Assimilation\ Step}$")
+    plt.title(f"$\mathrm{{{var_codes[var]}}} \ at \ {{{pslvl[lvl]}}}mb}}$")
+
+    plt.plot(data_analysis_by_level, color="r", label="Analysis")
+    plt.plot(data_backgroudn_by_level, color="b", label="Background")
+    plt.plot(fr, color="k", label="NODA")
+
+    plt.legend()
+    plt.ylabel(r"$log(\mathcal{l}_2)$")
+    plt.xlabel(r"$\mathrm{Assimilation\;Step}$")
     plt.legend(loc="best", prop={"size": 14})
     plt.tight_layout()
+    plt.autoscale()
     plt.savefig(plots_path / f"single_error_{var}_{lvl}.png", bbox_inches="tight")
     plt.close()
 
 
-
 def main_general_plotter(df_params):
+    # input_file = sys.argv[1]
     root_path = Path.cwd()
-    exp_pth = root_path.parent / "runs" 
+    exp_pth = root_path.parents[0] / "runs"
 
     for _, row in df_params.iterrows():
         method_path = exp_pth / row["exp_path"]
@@ -95,47 +69,29 @@ def main_general_plotter(df_params):
         variables = row["variable"]
         levels = row["level"]
         grid_res = row["resolution"]
-        M = int(row["M"])
-        # ADDED: Read the new directory name parameter from the CSV
-        plot_dir_name = row["plot_dir_name"]
-        if pd.isna(variables):
+
+        if np.isnan(variables):
             variables = model_vars
         else:
             variables = variables.strip().split(",")
 
-        if pd.isna(levels):
+        if np.isnan(levels):
             levels = range(8)
         else:
             levels = levels.strip().split(",")
             levels = [int(v) for v in levels]
 
-        # ADDED: Provide a default name if the parameter is not in the CSV
-        # First, define the base path to the "errors" directory
         plots_path = method_path / "plots" / "errors"
 
-        # If a specific subdirectory name is given in the CSV, append it
-        if not pd.isna(plot_dir_name):
-            plots_path = plots_path / plot_dir_name
-
-        # UPDATED: Construct the plots_path using the new directory name
-        
-
         gs = grid_resolution(grid_res)
-        ppt = postpro_tools(grid_res, gs, method_path, M)
+        ppt = postpro_tools(grid_res, gs, method_path, 30)
         ppt.compute_NODA()
 
         Path(plots_path).mkdir(parents=True, exist_ok=True)
 
         for var in variables:
-            analysis_path = method_path / "results" / f"{var}_ana.csv"
-            bckg_path = method_path / "results" / f"{var}_bck.csv"
-
-            if not analysis_path.exists() or not bckg_path.exists():
-                print(f"Warning: Result files for {var} not found. Skipping.")
-                continue
-
-            analysis = pd.read_csv(analysis_path)
-            bckg = pd.read_csv(bckg_path)
+            analysis = pd.read_csv(method_path / "results" / f"{var}_ana.csv")
+            bckg = pd.read_csv(method_path / "results" / f"{var}_bck.csv")
 
             for lvl in levels:
                 if ("PSG" in var) and lvl > 0:
@@ -143,12 +99,16 @@ def main_general_plotter(df_params):
                 if ("TRG" in var) and lvl < 2:
                     continue
                 single_error_plotter(analysis, bckg, var, lvl, ppt, plots_path)
-            print(f"* ENDJ - Plot {var} Finished")
+            print(f"* ENDJ - Plot {var} {lvl} Finished")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Creates error plots for a defined set of parameters.",
+        description="Creates a heatmap for a defined set of parameters "
+        + "using the specified configurations.\n"
+        + "Remember the config file must be a CSV containing the headers:\n"
+        + "setting,method,infla,mask,variable,level\n"
+        + "If no level or variable is set, default values will be used",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -160,4 +120,3 @@ if __name__ == "__main__":
     print("* STARTJ - Reading input file {0}".format(input_file))
     df_params = pd.read_csv(input_file)
     main_general_plotter(df_params)
-

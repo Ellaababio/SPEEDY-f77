@@ -1,7 +1,9 @@
 #!/bin/bash
+export LD_LIBRARY_PATH="/gpfs/home/ea25e/speedy_libs/lib:/gpfs/home/ea25e/.conda/envs/speedy_da_env/lib:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/gpfs/home/ea25e/.conda/envs/speedy_da_env/lib:${LD_LIBRARY_PATH}"
 
 # Absolute logs directory
-LOG_DIR="/gpfs/home/jjs21b/AMLCS/logs"
+LOG_DIR="/gpfs/home/ea25e/SPEEDY-f77/logs"
 
 # First argument is the script name
 script="$1"
@@ -36,4 +38,4 @@ echo "=========================================="
 } >> "$log"
 
 # Python output goes ONLY to log file
-PYTHONUNBUFFERED=1 python "$script" "$@" &> "$log"
+PYTHONUNBUFFERED=1 /gpfs/home/ea25e/.conda/envs/speedy_da_env/bin/python "$script" "$@" &> "$log"

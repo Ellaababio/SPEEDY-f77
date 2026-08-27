@@ -273,7 +273,7 @@ def submit(args):
                     f"--job-name={args.name}_r{r}_i{ii}",
                     f"--wrap={wrap}",
                 ]
-                result = subprocess.run(cmd, cwd=SCRIPT_DIR, capture_output=True, text=True)
+                result = subprocess.run(cmd, cwd=SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
                 print(result.stdout.strip())
                 if result.returncode != 0:
                     print(result.stderr.strip(), file=sys.stderr)
@@ -329,7 +329,7 @@ def submit(args):
             f"--dependency=afterok:{dep}",
             f"--wrap={wrap}",
         ]
-        result = subprocess.run(cmd, cwd=SCRIPT_DIR, capture_output=True, text=True)
+        result = subprocess.run(cmd, cwd=SCRIPT_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         print(result.stdout.strip())
         if result.returncode != 0:
             print(result.stderr.strip(), file=sys.stderr)
@@ -504,7 +504,7 @@ def build_parser(default_template=None,
     """
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command"); sub.required = True
 
     p_sub = sub.add_parser("submit", help="Generate configs and submit the (r x infla) grid sweep.")
     p_sub.add_argument("--template", required=(default_template is None), default=default_template,

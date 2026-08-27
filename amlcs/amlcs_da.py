@@ -45,29 +45,6 @@ def main():
     l_snap       = df_par['list_snapshots'].iloc[0].strip().split(',');
     option_mask  = int(df_par['option_mask'].iloc[0]);
     
-    # Read nonlinear settings (default to False/1.0 if missing)
-    nonlinear_obs = False
-    if 'nonlinear_obs' in df_par.columns:
-        nonlinear_obs = bool(df_par['nonlinear_obs'].iloc[0])
-        
-    scalefact = 1.0
-    if 'scalefact' in df_par.columns:
-        scalefact = float(df_par['scalefact'].iloc[0])
-        
-    wind_nonlinear_operator = False
-    if 'wind_nonlinear_operator' in df_par.columns:
-        wind_nonlinear_operator = bool(df_par['wind_nonlinear_operator'].iloc[0])
-
-    normalize_nonlinear = True
-    if 'normalize_nonlinear' in df_par.columns:
-        normalize_nonlinear = bool(df_par['normalize_nonlinear'].iloc[0])
-        
-    nonlinear_operator_type = 'arctan'
-    if 'nonlinear_operator_type' in df_par.columns:
-        nonlinear_operator_type = str(df_par['nonlinear_operator_type'].iloc[0])
-        
-    print(f"Nonlinear Obs: {nonlinear_obs}, Scale Factor: {scalefact}, Wind Nonlinear Operator: {wind_nonlinear_operator}, Normalize Nonlinear: {normalize_nonlinear}, Operator Type: {nonlinear_operator_type}")
-    
     list_k = [int(v) for v in l_snap];
 
     print(f'plac_obs = {obs_plc}');
@@ -94,7 +71,7 @@ def main():
     ini0_no_restart = [ini_times, 0, 0];
     #print(df_par['code'])
      
-    method_path = code_path+'_'+method+'_'+str(r)+'_'+str(s)+'_'+str(int(round(100*infla)));
+    method_path = code_path+'_'+method+'_'+str(r)+'_'+str(s)+'_'+str(int(100*infla)) + '_mask_' + str(option_mask);
     
     path = '../runs/';
     if not df_par['code'].isnull().values.any():
@@ -120,7 +97,7 @@ def main():
     plac_obs = df_par['obs_plc'].iloc[0].strip().split(',');
     obs_plc = [int(v) for v in plac_obs];
     #print (obs_plc)
-    ob = observation(err_obs, obs_plc, nonlinear_obs=nonlinear_obs, scalefact=scalefact, normalize_nonlinear=normalize_nonlinear, nonlinear_operator_type=nonlinear_operator_type);
+    ob = observation(err_obs, obs_plc);
 
     
     #1.1 Numerical model
@@ -136,13 +113,8 @@ def main():
     rs = reference_solution(nm, M);
     
     
-    
     #Setting the sequential data assimilation method
-    wind_err = {}
-    if len(err_obs) > 10: wind_err['WDG1'] = err_obs[10]
-    if len(err_obs) > 11: wind_err['WSG1'] = err_obs[11]
-    
-    seq_da = sequential_method(method).get_instance(nm, infla, Nens, nonlinear_obs=nonlinear_obs, scalefact=scalefact, wind_nonlinear_operator=wind_nonlinear_operator, wind_err=wind_err, normalize_nonlinear=normalize_nonlinear, nonlinear_operator_type=nonlinear_operator_type);
+    seq_da = sequential_method(method).get_instance(nm, infla, Nens);
     
     ob.build_observational_network(gs, nm, s=s);
     ob.build_synthetic_observations(nm, rs, M); 

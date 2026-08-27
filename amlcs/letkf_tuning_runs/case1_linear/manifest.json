@@ -1,0 +1,211 @@
+{
+  "name": "case1_linear",
+  "template": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_runner_normal.csv",
+  "exp_settings": "../LETKF_tuning/t21_80_0.05_30/",
+  "exp_settings_resolved": "/gpfs/home/ea25e/SPEEDY-f77/LETKF_tuning/t21_80_0.05_30",
+  "snapshots_dir": "/gpfs/home/ea25e/SPEEDY-f77/LETKF_tuning/t21_80_0.05_30/snapshots",
+  "code_path": "t21_80_0.05_30",
+  "M": 30,
+  "vars": [
+    "TG1",
+    "UG1",
+    "VG1",
+    "TRG1",
+    "PSG1"
+  ],
+  "r_values": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "infla_values": [
+    1.0,
+    1.15,
+    1.3,
+    1.45,
+    1.6
+  ],
+  "runs": [
+    {
+      "r": 1,
+      "infla": 1.0,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r1_i100.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r1_i100.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_100",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_100/case1_linear/data",
+      "job_id": "12407489"
+    },
+    {
+      "r": 1,
+      "infla": 1.15,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r1_i115.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r1_i115.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_115",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_115/case1_linear/data",
+      "job_id": "12407490"
+    },
+    {
+      "r": 1,
+      "infla": 1.3,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r1_i130.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r1_i130.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_130",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_130/case1_linear/data",
+      "job_id": "12407491"
+    },
+    {
+      "r": 1,
+      "infla": 1.45,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r1_i145.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r1_i145.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_145",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_145/case1_linear/data",
+      "job_id": "12407492"
+    },
+    {
+      "r": 1,
+      "infla": 1.6,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r1_i160.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r1_i160.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_160",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_1_1_160/case1_linear/data",
+      "job_id": "12407493"
+    },
+    {
+      "r": 2,
+      "infla": 1.0,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r2_i100.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r2_i100.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_100",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_100/case1_linear/data",
+      "job_id": "12407494"
+    },
+    {
+      "r": 2,
+      "infla": 1.15,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r2_i115.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r2_i115.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_115",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_115/case1_linear/data",
+      "job_id": "12407495"
+    },
+    {
+      "r": 2,
+      "infla": 1.3,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r2_i130.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r2_i130.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_130",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_130/case1_linear/data",
+      "job_id": "12407496"
+    },
+    {
+      "r": 2,
+      "infla": 1.45,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r2_i145.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r2_i145.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_145",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_145/case1_linear/data",
+      "job_id": "12407497"
+    },
+    {
+      "r": 2,
+      "infla": 1.6,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r2_i160.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r2_i160.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_160",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_2_1_160/case1_linear/data",
+      "job_id": "12407498"
+    },
+    {
+      "r": 3,
+      "infla": 1.0,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r3_i100.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r3_i100.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_100",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_100/case1_linear/data",
+      "job_id": "12407499"
+    },
+    {
+      "r": 3,
+      "infla": 1.15,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r3_i115.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r3_i115.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_115",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_115/case1_linear/data",
+      "job_id": "12407500"
+    },
+    {
+      "r": 3,
+      "infla": 1.3,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r3_i130.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r3_i130.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_130",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_130/case1_linear/data",
+      "job_id": "12407501"
+    },
+    {
+      "r": 3,
+      "infla": 1.45,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r3_i145.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r3_i145.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_145",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_145/case1_linear/data",
+      "job_id": "12407502"
+    },
+    {
+      "r": 3,
+      "infla": 1.6,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r3_i160.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r3_i160.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_160",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_3_1_160/case1_linear/data",
+      "job_id": "12407503"
+    },
+    {
+      "r": 4,
+      "infla": 1.0,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r4_i100.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r4_i100.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_100",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_100/case1_linear/data",
+      "job_id": "12407504"
+    },
+    {
+      "r": 4,
+      "infla": 1.15,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r4_i115.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r4_i115.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_115",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_115/case1_linear/data",
+      "job_id": "12407505"
+    },
+    {
+      "r": 4,
+      "infla": 1.3,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r4_i130.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r4_i130.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_130",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_130/case1_linear/data",
+      "job_id": "12407512"
+    },
+    {
+      "r": 4,
+      "infla": 1.45,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r4_i145.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r4_i145.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_145",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_145/case1_linear/data",
+      "job_id": "12407513"
+    },
+    {
+      "r": 4,
+      "infla": 1.6,
+      "config": "/gpfs/home/ea25e/SPEEDY-f77/amlcs/letkf_tuning_runs/case1_linear/configs/r4_i160.csv",
+      "config_rel": "letkf_tuning_runs/case1_linear/configs/r4_i160.csv",
+      "run_folder": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_160",
+      "data_dir": "/gpfs/home/ea25e/SPEEDY-f77/runs/t21_80_0.05_30_LETKF_4_1_160/case1_linear/data",
+      "job_id": "12407514"
+    }
+  ]
+}

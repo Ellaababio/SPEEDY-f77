@@ -2,15 +2,15 @@
 ###COMPILE=pgf90 
 
 COMPILE=gfortran
-COMOTT1= -O3 -fdefault-real-8 -fconvert=big-endian -frecord-marker=4
+COMOTT1= -O3 -fdefault-real-8 -fconvert=big-endian -frecord-marker=4 -fallow-argument-mismatch
 #COMOTT1=   -fdefault-real-8 -fconvert=big-endian -frecord-marker=4
 
 
 # TODO: Replace the path below with the full path to your home directory.
-NETCDF_INSTALL_PATH = /gpfs/home/jjs21b/speedy_libs
+NETCDF_INSTALL_PATH = /gpfs/home/ea25e/speedy_libs
 
 # These variables use the path defined above. No changes are needed here.
-NETCDF_FLAGS = -L$(NETCDF_INSTALL_PATH)/lib -lnetcdff
+NETCDF_FLAGS = $(NETCDF_INSTALL_PATH)/lib/libnetcdff.a $(NETCDF_INSTALL_PATH)/lib/libnetcdf.a $(NETCDF_INSTALL_PATH)/lib/libhdf5_hl.a $(NETCDF_INSTALL_PATH)/lib/libhdf5.a $(NETCDF_INSTALL_PATH)/lib/libz.a -lm -ldl
 NETCDF_INCLUDE = -I$(NETCDF_INSTALL_PATH)/include
 
 
