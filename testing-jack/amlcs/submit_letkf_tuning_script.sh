@@ -1,0 +1,1 @@
+python letkf_r_tuning.py submit --template letkf_runner_only_wind.csv --r-values 1,2,3,4,5 --exp-settings ../LETKF_tuning/t21_80_0.05_30/ --name wsg_only_m1

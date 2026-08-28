@@ -23,17 +23,4 @@ runs/*
 runs/t21_50_0.05_5_ReverseSDE_1_5_100/*
 
 # 4. ...and FINALLY, make the exception for the one file you want to track.
-!runs/t21_50_0.05_5_ReverseSDE_1_5_100/block_map.json*.nc
-__pycache__/
-*.pyc
-
-*.nc
-
-*.nc
-original-amlcs/
-testing-jack/important_results/
-
-testing-jack/important_results/
-
-testing-jack/LETKF_tuning/
-fort_*
+!runs/t21_50_0.05_5_ReverseSDE_1_5_100/block_map.json
